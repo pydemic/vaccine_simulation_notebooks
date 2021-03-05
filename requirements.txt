@@ -1,2 +1,7 @@
+ipywidgets
 pandas
+numpy
 matplotlib
+asyncio
+voila
+ipykernel
