@@ -11,4 +11,4 @@ You can use pip:
 $ pip3 install jupyter notebook pandas ipywidgets
 ```
 
-Once everything is installed, run the notebook server with `jupyter notebook`, then select the desired notebook.
+Once everything is installed, run the notebook server with `jupyter notebook`, then select the desired notebook. 
