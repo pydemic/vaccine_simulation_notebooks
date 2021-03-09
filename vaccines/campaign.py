@@ -28,7 +28,7 @@ class VaccinationCampaign:
 
     @property
     def vaccines(self):
-        return self.events["applied"].sum()
+        return self.events["doses"].sum()
 
     @property
     def _title_fontsize(self):
@@ -43,7 +43,7 @@ class VaccinationCampaign:
         Return a Series with duration to start vaccination of each age cohoort.
         """
         events = self.events
-        df = events[["day", "fraction", "age"]][events["dose"] == 1]
+        df = events[["day", "age", "fraction"]][events["phase"] == 1]
         df = df[df["fraction"] > tol].drop(columns="fraction")
         return df.groupby("age").min()["day"] + delay
 
@@ -52,7 +52,7 @@ class VaccinationCampaign:
         Return a Series with duration to start vaccination of each age cohoort.
         """
         events = self.events
-        df = events[["day", "fraction", "age"]][events["dose"] == 2]
+        df = events[["day", "age", "fraction"]][events["phase"] == 2]
         df = df[df["fraction"] > minimum].drop(columns="fraction")
         return df.groupby("age").max()["day"] + delay
 
@@ -64,7 +64,7 @@ class VaccinationCampaign:
         """
         events = self.events
         columns = ["day", "age", "fraction"]
-        filtered = events[columns][events["dose"] == dose]
+        filtered = events[columns][events["phase"] == dose]
         return filtered.pivot(*columns).fillna(method="pad").fillna(0.0)
 
     def damage_curve(self, damage, dose=2, delay=0, efficiency=1.0) -> pd.DataFrame:
@@ -111,11 +111,7 @@ class VaccinationCampaign:
         plt.legend(bbox_to_anchor=(1.33, 1), loc="upper right")
 
     def plot_hospitalization_pressure_curve(self, severe, as_pressure=False, **kwargs) -> Tuple[pd.DataFrame, Axes]:
-        if as_pressure:
-            pressure = severe
-        else:
-            pressure = self.damage_curve(severe, dose=2, **kwargs)
-
+        pressure = severe if as_pressure else self.damage_curve(severe, **kwargs)
         np.minimum(100 * pressure, 99.5).plot(lw=2)
         plt.grid(True)
         plt.title("Estimativa de redução de hospitalizações", fontsize=self._title_fontsize)

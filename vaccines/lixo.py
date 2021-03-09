@@ -11,40 +11,6 @@ from typing import List, Tuple
 from IPython.display import display, Latex, Markdown
 
 
-def population_80_plus(data):
-    data.loc[80] = data.loc[80:].sum()
-    return data.loc[20:80].iloc[::-1]
-
-
-
-
-def vaccine_curves(events, dose=2, extra=0):
-    df = (
-        events[['day', 'fraction', 'age']][events['dose'] == dose]
-            .pivot('day', 'age', 'fraction')
-            .fillna(method='pad')
-            .fillna(0.0)
-    )
-    if extra:
-        n = df.index.max() + 1
-        df = pd.concat([df, pd.DataFrame([df.iloc[-1]], index=range(n, n + extra))])
-    return df
-
-
-def vaccination_day(events, end=True, delay=20):
-    if end:
-        c = vaccine_curves(events, 2, delay)
-        return pd.Series(
-            c.index[np.argmax((c == c.max()).values, axis=0)],
-            index=curve.columns,
-        ).sort_index(ascending=False)
-    else:
-        c = vaccine_curves(events, 1, delay)
-        return pd.Series(
-            c.index[np.argmin((c > 0).values, axis=0)],
-            index=curve.columns,
-        ).sort_index(ascending=False)
-
 
 def severe_rate(curves, severe, delay=10, efficiency=1.0):
     N = severe.sum()

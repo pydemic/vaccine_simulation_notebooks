@@ -1,13 +1,158 @@
 from collections import deque, defaultdict, Counter
 import pandas as pd
-from typing import List, Tuple
+from typing import List, Tuple, NamedTuple, Dict, Deque, Iterator
 import numpy as np
 import pandas as pd
+
+EMPTY_DOSE = (None, None, None, 0)
+
+
+class Event(NamedTuple):
+    day: int
+    age: int
+    doses: int
+    applied: int
+    
+
+class Plan:
+    """
+    Base class for executing a vaccination plan
+    """
+    steps: Tuple[Tuple[int, int]]
+    age_distribution: pd.Series
+    pending: Deque[Tuple[int, int]]
+    events: List[Event]
+    day: int
+
+    @classmethod
+    def from_source(cls, src: str, age_distribution: pd.Series, *args, **kwargs):
+        steps = parse_plan(src, age_distribution)
+        return cls(steps, age_distribution, *args, **kwargs)
+
+    def __init__(self, steps, age_distribution):
+        self.steps = tuple(steps)
+        self.age_distribution = age_distribution
+        self.pending = deque(self.steps)
+        self.events = []
+        self.day = 0
+
+    def execute(self, max_iter=10_000):
+        """
+        Execute plan
+        """
+        for _ in range(max_iter):
+            if self.is_complete():
+                return
+            self.execute_step()
+        raise ValueError('maximum number of iterations reached')
+
+    def execute_step(self):
+        """
+        Execute a single day of vaccination from plan.
+        """
+        raise NotImplementedError
+
+    def is_complete(self) -> bool:
+        """
+        Return True if vaccination plan is complete.
+        """
+        return not bool(self.pending)
+
+    def accumulate(self) -> Iterator[float]:
+        """
+        Accumulate doses by age and phase.
+
+        Return an iterator synchronized with events. 
+        """
+        acc = Counter()
+        for (_, age, doses, phase) in self.events: 
+            acc[age, phase] += doses
+            yield acc[age, phase]
+
+    def summary(self) -> pd.DataFrame:
+        """
+        Return dataframe summary.
+        """
+        df = pd.DataFrame(self.events, columns=['day', 'age', 'doses', 'phase'])
+        df['acc'] = list(self.accumulate())
+        total = df["age"].apply(self.age_distribution.loc.__getitem__)
+        df["fraction"] = df['acc'] / total
+        return df[df['doses'] > 0]
+
+
+class SimpleRatePlan(Plan):
+    rate: int
+    max_doses: int
+
+    def __init__(self, steps, age_distribution, *, rate, dose=1, max_doses=float('inf')):
+        super().__init__(steps, age_distribution)
+        self.rate = rate
+        self.max_doses = max_doses
+        self.given_doses = 0
+        self.dose = dose
+
+    def is_complete(self) -> bool:
+        return super().is_complete() or self.given_doses >= self.max_doses
+
+    def execute_step(self):
+        if not self.pending:
+            self.day += 1
+            return []
+
+        age, n = self.pending.popleft()
+        rate = min(self.rate, self.max_doses - self.given_doses)
+        
+        if n > rate:
+            n -= rate
+            applied = rate
+            self.pending.appendleft((age, n))
+        else:
+            applied = n
+        
+        ev = Event(self.day, age, applied, self.dose)
+        self.given_doses += applied
+        self.events.append(ev)
+        self.day += 1
+        return [ev]
+
+
+class SimpleDosesRatePlan(SimpleRatePlan):
+    delay: int
+    schedule: Dict[int, List[Event]] 
+
+    def __init__(self, steps, age_distribution, *, delay, **kwargs):
+        super().__init__(steps, age_distribution, **kwargs)
+        self.delay = delay
+        self.schedule = defaultdict(list)
+
+    def is_complete(self) -> bool:
+        return super().is_complete() and not bool(self.schedule)
+
+    def execute_step(self):
+        events = self.schedule.pop(self.day, ())
+        if events:
+            events = self.execute_scheduled_events(events)
+        if events:
+            self.day += 1
+            return events
+        
+        events = super().execute_step()
+        for (day, age, applied, dose) in events:
+            day_ = day + self.delay
+            ev = Event(day_, age, applied, dose + 1)
+            self.schedule[day_].append(ev)
+        return events
+
+    def execute_scheduled_events(self, events):
+        self.events.extend(events)
+        return events            
 
 
 def parse_plan(st: str, age_distribution: pd.Series) -> List[Tuple[int, int]]:
     """
-    Parse vaccination plan.
+    Parse vaccination plan. 
+    
+    The plan is a list of tuples with (age category, number of doses).
     """
     plan = []
     lines = deque(filter(None, map(strip_comments, st.splitlines())))
@@ -148,7 +293,7 @@ def execute_plan_safe(
             acc[:] = initial
     acc = pd.DataFrame(acc, columns=["first", "second"], index=index)
     rates = list(rate)
-    rates.extend([final_rate or rates[-1]] * 100)
+    rates.extend([final_rate or rates[-1]] * 365)
 
     for day, daily_stock in enumerate(rates):
         stock = daily_stock
