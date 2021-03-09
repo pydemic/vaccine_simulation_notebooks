@@ -120,3 +120,14 @@ class VaccinationCampaign:
         plt.ylim(0, 100)
         plt.xlim(0, self._duration)
         return pressure, plt.gca()
+
+    def plot_death_pressure_curve(self, deaths, as_pressure=False, **kwargs) -> Tuple[pd.DataFrame, Axes]:
+        pressure = deaths if as_pressure else self.damage_curve(deaths, **kwargs)
+        np.minimum(100 * pressure, 99.5).plot(lw=2)
+        plt.grid(True)
+        plt.title("Estimativa de redução de mortalidade", fontsize=self._title_fontsize)
+        plt.xlabel("tempo (dias)")
+        plt.ylabel("mortalidade (%)")
+        plt.ylim(0, 100)
+        plt.xlim(0, self._duration)
+        return pressure, plt.gca()

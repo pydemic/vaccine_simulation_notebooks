@@ -81,15 +81,22 @@ class Plan:
 
 
 class SimpleRatePlan(Plan):
+    """
+    A simple fixed rate of vaccination.
+
+    Proceed until all population is vaccinated or the stock of doses is depleted.
+    """
     rate: int
     max_doses: int
+    given_doses: int
+    phase: int
 
-    def __init__(self, steps, age_distribution, *, rate, dose=1, max_doses=float('inf')):
+    def __init__(self, steps, age_distribution, *, rate, phase=1, max_doses=float('inf')):
         super().__init__(steps, age_distribution)
         self.rate = rate
         self.max_doses = max_doses
         self.given_doses = 0
-        self.dose = dose
+        self.phase = phase
 
     def is_complete(self) -> bool:
         return super().is_complete() or self.given_doses >= self.max_doses
@@ -109,7 +116,7 @@ class SimpleRatePlan(Plan):
         else:
             applied = n
         
-        ev = Event(self.day, age, applied, self.dose)
+        ev = Event(self.day, age, applied, self.phase)
         self.given_doses += applied
         self.events.append(ev)
         self.day += 1
@@ -117,6 +124,12 @@ class SimpleRatePlan(Plan):
 
 
 class SimpleDosesRatePlan(SimpleRatePlan):
+    """
+    A simple fixed rate of vaccination, with more than one dose per individual.
+
+    Proceed until all population is vaccinated or the stock of doses is depleted.
+    The limit "max_doses" refers to the full vaccination scheme. 
+    """
     delay: int
     schedule: Dict[int, List[Event]] 
 
@@ -146,6 +159,36 @@ class SimpleDosesRatePlan(SimpleRatePlan):
     def execute_scheduled_events(self, events):
         self.events.extend(events)
         return events            
+
+
+class MultipleVaccinesRatePlan(Plan):
+    """
+    Multiple vaccines
+    """
+    rates: List[int]
+    max_doses: List[int]
+    given_doses: List[int]
+    delays: List[int]
+    schedule: Dict[int, List[Dict[int, Event]]] 
+    phase: int
+
+    @property
+    def vac_types(self):
+        return len(self.rates) 
+
+    def __init__(self, steps, age_distribution, *, rates, max_doses, delays, phase=1):
+        super().__init__(steps, max_doses)
+        self.phase = 1
+        self.rates = list(rates)
+        self.max_doses = list(max_doses)
+        self.delays = list(delays)
+        self.schedule = defaultdict(list)
+
+    def is_complete(self) -> bool:
+        return not bool(self.schedule) and (
+            super().is_complete() 
+            or all(x >= y for (x, y) in self.given_doses >= self.max_doses)
+        )
 
 
 def parse_plan(st: str, age_distribution: pd.Series) -> List[Tuple[int, int]]:
