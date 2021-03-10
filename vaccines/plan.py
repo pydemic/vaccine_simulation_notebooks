@@ -1,6 +1,6 @@
 from collections import deque, defaultdict, Counter
 import pandas as pd
-from typing import List, Tuple, NamedTuple, Dict, Deque, Iterator, TypeVar, Type, cast
+from typing import List, Tuple, NamedTuple, Dict, Deque, Iterator, TypeVar, Type, Any, Union, cast
 import numpy as np
 import pandas as pd
 from numbers import Real
@@ -8,6 +8,7 @@ from numbers import Real
 from .campaign import VaccinationCampaign, MultiVaccineCampaign
 from .vaccine import Vaccine
 
+Number = Union[int, float]
 EMPTY_DOSE = (None, None, None, 0)
 T = TypeVar("T", bound="Plan", covariant=True)
 
@@ -256,7 +257,7 @@ class MultipleVaccinesRatePlan(Plan):
         events = self.schedule.pop(self.day, ())
         if events:
             events = self._execute_scheduled_events(events)
-        if not events:
+        if not events and  self.pending:
             age, n = self.pending.popleft()
             events = self._execute_plan_step(age, n)
 
@@ -334,8 +335,8 @@ def parse_plan(src: str, age_distribution: pd.Series, initial:pd.Series=None) ->
 
     The plan is a list of tuples with (age category, number of doses).
     """
+    
     plan = []
-    lines = deque(filter(None, map(strip_comments, src.splitlines())))
     age_levels = sorted(age_distribution.index)
     age_acc = Counter()
     
@@ -344,28 +345,23 @@ def parse_plan(src: str, age_distribution: pd.Series, initial:pd.Series=None) ->
             if v:
                 age_acc[k] += int(v)
     
+    lines = deque(validate_plan(src))
     while lines:
-        line = lines.popleft()
-        if ":" not in line:
-            lines.appendleft(f"global: {line}")
-            continue
-
-        key, _, value = map(str.strip, line.partition(":"))
+        key, value, is_relative = lines.popleft()
         if key == "global":
-            if value.endswith("%"):
-                lines.extendleft(f"{age}: {value}" for age in age_levels)
+            if is_relative:
+                lines.extendleft((age, value, True) for age in age_levels)
                 continue
             else:
                 N = age_distribution.sum()
                 M = float(value)
-                lines.extendleft(
-                    f"{age}: {int(M / N * n)}"
+                lines.extendleft((age, int(M / N * n), False)
                     for age, n in zip(age_levels, age_distribution)
                 )
         key = int(key)
 
-        if value.endswith("%"):
-            value = int(float(value[:-1]) / 100 * age_distribution.loc[key])
+        if is_relative:
+            value = int(value * age_distribution.loc[key])
             value -= age_acc[key]
         else:
             value = int(value)
@@ -375,6 +371,45 @@ def parse_plan(src: str, age_distribution: pd.Series, initial:pd.Series=None) ->
             plan.append((key, value))
 
     return plan
+
+
+def validate_plan(st) -> Iterator[Tuple[Any, Number, bool]]:
+    def error(msg):
+        return SyntaxError(f'Erro linha {ln}: {msg}')
+    
+    def parse_num(num):
+        if num.endswith('%'):
+            try:
+                return float(num[:-1]) / 100, True
+            except ValueError:
+                raise error('porcentagem inválida!')
+        else:
+            try:
+                return int(num), False
+            except ValueError:
+                raise error('número inválido')
+    
+    for ln, line in enumerate(st.splitlines(), 1):
+        line = line.strip()
+        if not line or line.startswith('#'):
+            continue
+
+        if ":" not in line:
+            if not line.endswith('%'):
+                raise error('esperava uma porcentagem!')
+            parse_num(line)
+            line = f'global:{line}'
+        
+        key, _, number = map(str.strip, line.partition(":"))
+        
+        if not (key == 'global' or key.isdigit()):
+            raise SyntaxError(f'Erro linha {ln}: população inválida: {key}')
+        if key.isdigit():
+            key = int(key)
+        
+        value, is_relative = parse_num(number) 
+        if value:
+            yield key, value, is_relative
 
 
 def strip_comments(st):

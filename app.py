@@ -16,6 +16,18 @@ def simple(n):
 
 
 def read_inputs(sb=st.sidebar, st=st) -> dict:
+    def check_plan(plan, full=True):
+        try:
+            _ = [*lib.validate_plan(plan)]
+        except SyntaxError as ex:
+            if full:
+                st.error(f"{ex} Considerando cobertura de 100%")
+                return "global: 100%"
+            else:
+                st.error(f"{ex} Considerando cobertura de 0%")
+                return "80: 0"
+        return plan
+
     sb.header("Configurações")
     opts = load_regions()
     region = sb.selectbox(
@@ -39,17 +51,23 @@ def read_inputs(sb=st.sidebar, st=st) -> dict:
     smooth = False  # sb.checkbox("Imunidade gradual")
 
     st.header("Planos de vacinação")
-    vaccine_plan = st.text_area("Metas de vacinação por faixa etária", "95%")
+    vaccine_plan = check_plan(
+        st.text_area("Metas de vacinação por faixa etária", "95%")
+    )
+
     with st.beta_expander("Vacinas já aplicadas (clique para expandir)"):
         step = 10 if coarse else 5
         placeholder = "\n".join(f"{n}: 0" for n in range(80, 19, -step))
-        initial_plan = st.text_area(
-            "Vacinados",
-            f"""
+        initial_plan = check_plan(
+            st.text_area(
+                "Vacinados",
+                f"""
 # Preencha a quantidade de pessoas vacinadas por faixa etária.
 {placeholder}
         """.strip(),
-            height=225 if coarse else 375,
+                height=225 if coarse else 375,
+            ),
+            full=False,
         )
 
     return {
@@ -122,6 +140,7 @@ def compute(coarse, rate, region, stocks, initial_plan, vaccine_plan, smooth):
     age_distribution = load_age_distribution(region, coarse)
     hospitalizations = load_hospitalizations(region, coarse)
     deaths = load_deaths(region, coarse)
+    error = None
 
     # Prepara entradas
     vaccine_stocks = {k: v for k, v in stocks.items() if v}
@@ -153,16 +172,6 @@ def compute(coarse, rate, region, stocks, initial_plan, vaccine_plan, smooth):
     duration = lib.by_periods(duration, 30)
     result = result.copy(duration=duration)
 
-    # Curvas de redução de pressão
-    kwds = {
-        "delay": delay["immunization"],
-        "smooth": smooth,
-        "initial": initial,
-    }
-    eff = [v.efficiency for v in vaccines]
-    hospital_pressure = result.damage_curve(hospitalizations, efficiency=eff, **kwds)
-    death_pressure = result.damage_curve(deaths, **kwds)
-
     # Danos esperados com/sem vacina
     def expected(pressure, scale=1):
         res = (pressure / 365).sum()
@@ -173,13 +182,37 @@ def compute(coarse, rate, region, stocks, initial_plan, vaccine_plan, smooth):
             res += dt / 365 * pressure.iloc[-1]
         return scale * res
 
-    expected_deaths = expected(death_pressure, deaths.sum())
-    expected_hospitalizations = expected(hospital_pressure, hospitalizations.sum())
+    # Curvas de redução de pressão
+    kwds = {
+        "delay": delay["immunization"],
+        "smooth": smooth,
+        "initial": initial,
+    }
+    eff = [v.efficiency for v in vaccines]
+    try:
+        hospital_pressure = result.damage_curve(
+            hospitalizations, efficiency=eff, **kwds
+        )
+        death_pressure = result.damage_curve(deaths, **kwds)
+        expected_deaths = expected(death_pressure, deaths.sum())
+        expected_hospitalizations = expected(hospital_pressure, hospitalizations.sum())
+        reduced_deaths = 1 - death_pressure.iloc[-1]
+        reduced_hospitalizations = 1 - hospital_pressure.iloc[-1]
+
+    except Exception as ex:
+        hospital_pressure = None
+        death_pressure = None
+        expected_deaths = deaths.sum()
+        expected_hospitalizations = hospitalizations.sum()
+        reduced_deaths = 0
+        reduced_hospitalizations = 0
+        error = ex
+        tb = ex.__traceback__
 
     # Vacinados por faixa etária
-    df = result.events.drop(columns=['day', 'fraction', 'acc'])
-    df = df[df['phase'] == 2].groupby('age').sum()
-    vaccinated = df['doses']
+    df = result.events.drop(columns=["day", "fraction", "acc"])
+    df = df[df["phase"] == 2].groupby("age").sum()
+    vaccinated = df["doses"]
 
     # Saída
     return SimpleNamespace(
@@ -198,10 +231,11 @@ def compute(coarse, rate, region, stocks, initial_plan, vaccine_plan, smooth):
         initial_distribution=initial,
         initial_doses=initial.values.sum(),
         plots=result,
-        reduced_deaths=1 - death_pressure.iloc[-1],
-        reduced_hospitalizations=1 - hospital_pressure.iloc[-1],
+        reduced_deaths=reduced_deaths,
+        reduced_hospitalizations=reduced_hospitalizations,
         vaccines=plan.vaccines,
         vaccinated=vaccinated,
+        error=error,
     )
 
 
@@ -225,26 +259,30 @@ st.markdown(
 * **Redução na hospitalização:** {100 * r.reduced_hospitalizations:.1f}%
 * **Redução dos óbitos:** {100 * r.reduced_deaths:.1f}%
 
-&ast; Óbitos e hospitalizações foram projetadas a partir de dados do 
-SIVEP/gripe. Alguns estados não possuem dados confiáveis nestas bases.
+&ast;  Óbitos e hospitalizações foram projetados a partir de dados do 
+SIVEP/gripe, que é atualizado semanalmente e disponibilizado no link: https://opendatasus.saude.gov.br/dataset?tags=SRAG.
+Os resultados apresentam maior acurácia quanto maior for a qualidade e 
+oportunidade de registro dos dados nos sistemas oficiais.
 """
 )
 
 #
 # Gráficos
 #
-fig, ax = plt.subplots()
-r.plots.plot_hospitalization_pressure_curve(r.hospital_pressure, as_pressure=True)
-st.pyplot(fig)
+if not r.error:
+    fig, ax = plt.subplots()
+    r.plots.plot_hospitalization_pressure_curve(r.hospital_pressure, as_pressure=True)
+    st.pyplot(fig)
 
-fig, ax = plt.subplots()
-r.plots.plot_death_pressure_curve(r.death_pressure, as_pressure=True)
-st.pyplot(fig)
+    fig, ax = plt.subplots()
+    r.plots.plot_death_pressure_curve(r.death_pressure, as_pressure=True)
+    st.pyplot(fig)
 
-fig, ax = plt.subplots()
-r.plots.plot_vaccination_schedule(ax=ax)
-st.pyplot(fig)
-
+    fig, ax = plt.subplots()
+    r.plots.plot_vaccination_schedule(ax=ax)
+    st.pyplot(fig)
+else:
+    st.error(f"Erro durante execução da simulação: {r.error}")
 
 #
 # Observações
@@ -253,14 +291,19 @@ st.markdown(
     f"""
 ## Observações
 
-O primeiro gráfico mostra a estimativa de redução nas hospitalizações esperadas enquanto o segundo gráfico mostra a estimativa de redução de mortalidade, em função da estratégia de imunização, ou seja devido à proteção conferida pelas vacinas. 
+O primeiro gráfico mostra a estimativa de redução nas hospitalizações esperadas 
+enquanto o segundo gráfico mostra a estimativa de redução de mortalidade, em 
+função da estratégia de imunização, ou seja devido à proteção conferida pelas 
+vacinas. 
 
-O terceiro gráfico mostra a cobertura vacinal por faixa etária ao longo do tempo. A faixa cinza mais clara representa o percentual da população que ainda não foi imunizada, 
-a faixa cinza mais escura mostra a população que está aguardando a segunda dose e a faixa verde mostra a população que na qual foram aplicadas as duas
-doses da vacina. 
+O terceiro gráfico mostra a cobertura vacinal por faixa etária ao longo do tempo. 
+A faixa cinza mais clara representa o percentual da população que ainda não foi 
+imunizada, a faixa cinza mais escura mostra a população que está aguardando a 
+segunda dose e a faixa verde mostra a população na qual foram aplicadas as 
+duas doses da vacina. 
 
-A simulação considera que a taxa de infecção se mantêm constante, o que é uma suposição conservadora, 
-especialmente em níveis mais altos de vacinação.
+A simulação considera que a taxa de infecção se mantêm constante, o que é uma
+suposição conservadora, especialmente em níveis mais altos de vacinação.
 
 ## Parâmetros utilizados 
 
@@ -284,14 +327,14 @@ emergencial, em caráter experimental, da vacina covid-19 (recombinante) –
 )
 
 # Imprime dados avançados e possivelmente locais para baixar CSVs.
-st.subheader('Avançado')
+st.subheader("Avançado")
 
 with st.beta_expander("Dados demográficos"):
     df = pd.DataFrame(
         {
             "Distribuição etária": r.age_distribution,
             "Hospitalizações": r.hospitalizations,
-            "Vacinados (estimado)": r.vaccinated, 
+            "Vacinados (estimado)": r.vaccinated,
             "Óbitos": r.deaths,
         }
     ).dropna()
