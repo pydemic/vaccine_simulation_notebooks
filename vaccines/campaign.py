@@ -176,7 +176,8 @@ class MultiVaccineCampaign(VaccinationCampaign):
         if initial is not None:
             col = 'vaccine_type'
             weights = events[['doses', col]].groupby(col).sum().values
-            eff = (efficiency * weights / weights.sum()).sum()
+            weights /= weights.sum()
+            eff = efficiency.dot(weights)
             
             value = 0.0
             for age, doses in zip(initial.index, initial.values):

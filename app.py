@@ -1,3 +1,5 @@
+from vaccines.utils import compute_schedule
+from types import SimpleNamespace
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -9,43 +11,49 @@ from typing import List, Dict
 sys.path.append(".")
 import vaccines as lib
 
+def simple(n):
+    st = str(int(n))
+    return int(st[:2] + '0' * max(len(st) - 2, 0))
 
-def read_inputs(st=st.sidebar) -> dict:
-    st.header("Opções")
+def read_inputs(sb=st.sidebar, st=st) -> dict:
+    sb.header("Configurações")
     opts = load_regions()
-    region = st.selectbox("UF", [*opts.keys()], format_func=opts.get)
+    region = sb.selectbox("UF", [*opts.keys()], format_func=opts.get, index=len(opts) - 1)
+    population = load_population(region)
 
-    st.subheader("Estoque de doses")
+    sb.subheader("Estoque de doses")
+    stock = simple(population * 0.5 / len(lib.VACCINE_DB)) // 1000
     stocks = {
-        vaccine: st.number_input(f"Doses ({vaccine})", min_value=0, value=200_000)
+        vaccine: 1000 * sb.number_input(f"Mil doses ({vaccine})", min_value=0, value=stock)
         for vaccine in lib.VACCINE_DB
     }
-    rate = st.number_input(
-        "Capacidade de vacinação (vacinas/dia)", min_value=0, value=6_000
-    )
 
-    st.subheader("Planos de vacinação")
-    coarse = st.checkbox("Agrupar de 10 em 10 anos")
+    sb.subheader("Capacidade de vacinação")
+    msg = "Capacidade de vacinação (doses/dia)"
+    rate = sb.number_input(msg, min_value=0, value=simple(0.005 * population))
+    
+    sb.subheader("Opções")
+    coarse = sb.checkbox("Agrupar de 10 em 10 anos")
+    smooth=sb.checkbox("Imunidade gradual")
 
-    vaccine_plan = st.text_area("Metas", "95%")
-    step = 10 if coarse else 5
-    placeholder = "\n".join(f"{n}: 0" for n in range(80, 19, -step))
-    initial_plan = st.text_area(
-        "Vacinados",
-        f"""
-# Preencha a quantidade de 
-# pessoas vacinadas por 
-# faixa etária.
+    st.header("Planos de vacinação")
+    vaccine_plan = st.text_area("Metas de vacinação por faixa etária", "95%")
+    with st.beta_expander('Vacinas já aplicadas'):
+        step = 10 if coarse else 5
+        placeholder = "\n".join(f"{n}: 0" for n in range(80, 19, -step))
+        initial_plan = st.text_area(
+            "Vacinados",
+            f"""
+# Preencha a quantidade de pessoas vacinadas por faixa etária.
 {placeholder}
-    """.strip(),
-        height=400,
-    )
-
-    st.markdown("---")
+        """.strip(),
+            height=225 if coarse else 375,
+        )
 
     return {
         "region": region,
         "stocks": stocks,
+        "smooth": smooth,
         "rate": rate,
         "coarse": coarse,
         "initial_plan": initial_plan,
@@ -66,7 +74,12 @@ def config():
         except:
             pass
 
-    builtins.st = st
+    setattr(builtins, 'st', st)
+
+
+@st.cache
+def load_population(region) -> pd.Series:
+    return load_age_distribution(region).sum()
 
 
 @st.cache
@@ -102,45 +115,29 @@ def load_regions():
     return db["name"].to_dict()
 
 
-#
-# Application
-#
-config()
-st.markdown(
-    "## Ferramenta para determinação do impacto da "
-    "vacinação nas internações por COVID-19"
-)
+@st.cache
+def compute(coarse, rate, region, stocks, initial_plan, vaccine_plan, smooth):
+    age_distribution = load_age_distribution(region, coarse)
+    hospitalizations = load_hospitalizations(region, coarse)
+    deaths = load_deaths(region, coarse)
 
-opts = read_inputs()
-coarse, rate, region, stocks = (opts[k] for k in ["coarse", "rate", "region", "stocks"])
-age_distribution = load_age_distribution(region, coarse)
-hospitalizations = load_hospitalizations(region, coarse)
-deaths = load_deaths(region, coarse)
+    # Prepara entradas
+    vaccine_stocks = {k: v for k, v in stocks.items() if v}
+    vaccines = [k for k, v in sorted(vaccine_stocks.items(), reverse=True)]
+    max_doses = [vaccine_stocks[k] // 2 for k in vaccines]
+    total_doses = sum(max_doses)
 
+    delay = {
+        "immunization": [v.immunization_delay for v in vaccines],
+        "second_dose": [v.second_dose_delay for v in vaccines],
+    }
 
-#
-# Prepara entradas
-#
-vaccine_stocks = {k: v for k, v in opts["stocks"].items() if v}
-vaccines = [k for k, v in sorted(vaccine_stocks.items(), reverse=True)]
-max_doses = [vaccine_stocks[k] // 2 for k in vaccines]
-total_doses = sum(max_doses)
+    initial = lib.parse_plan(initial_plan, age_distribution)
+    initial = pd.DataFrame(initial, columns=["age", "value"]).set_index("age")
 
-delay = {
-    "immunization": [v.immunization_delay for v in vaccines],
-    "second_dose": [v.second_dose_delay for v in vaccines],
-}
-
-initial = lib.parse_plan(opts["initial_plan"], age_distribution)
-initial = pd.DataFrame(initial, columns=["age", "value"]).set_index("age")
-
-
-#
-# Simula plano e calcula resultados
-#
-with st.spinner():
+    # Simula plano e calcula resultados
     plan = lib.MultipleVaccinesRatePlan.from_source(
-        opts["vaccine_plan"],
+        vaccine_plan,
         age_distribution,
         vaccines,
         initial=initial,
@@ -149,28 +146,75 @@ with st.spinner():
     )
     result = plan.execute()
 
-duration = result.events["day"].max() + sum(max(x) for x in delay.values())
-duration = lib.by_periods(duration, 30)
-result = result.copy(duration=duration)
+    duration = result.events["day"].max() + sum(max(x) for x in delay.values())
+    duration = lib.by_periods(duration, 30)
+    result = result.copy(duration=duration)
 
-kwds = {
-    "delay": delay["immunization"],
-    "smooth": st.checkbox("Imunidade gradual"),
-    "initial": initial,
-}
-eff = [v.efficiency for v in vaccines]
-hospital_pressure = result.damage_curve(hospitalizations, efficiency=eff, **kwds)
-death_pressure = result.damage_curve(deaths, **kwds)
+    kwds = {
+        "delay": delay["immunization"],
+        "smooth": smooth,
+        "initial": initial,
+    }
+    eff = [v.efficiency for v in vaccines]
+    hospital_pressure = result.damage_curve(hospitalizations, efficiency=eff, **kwds)
+    death_pressure = result.damage_curve(deaths, **kwds)
 
+    def expected(pressure, scale=1):
+        res = (pressure / 365).sum()
+        if duration >= 365:
+            res *= 365 / duration
+        else:
+            dt = 365 - duration
+            res += dt / 365 * pressure.iloc[-1]
+        return scale * res
+    
+    expected_deaths = expected(death_pressure, deaths.sum())
+    expected_hospitalizations = expected(hospital_pressure, hospitalizations.sum())
+
+    return SimpleNamespace(
+        age_distribution=age_distribution,
+        applied_doses=result.applied_doses,
+        death_pressure=death_pressure,
+        deaths=deaths,
+        duration=result.campaign_duration,
+        expected_deaths=int(expected_deaths),
+        expected_deaths_max=int(deaths.sum()),
+        expected_hospitalizations=int(expected_hospitalizations),
+        expected_hospitalizations_max=int(hospitalizations.sum()),
+        events=result.events,
+        hospital_pressure=hospital_pressure,
+        hospitalizations=hospitalizations,
+        initial_distribution=initial,
+        initial_doses=initial.values.sum(),
+        plots=result,
+        reduced_deaths=1 - death_pressure.iloc[-1],
+        reduced_hospitalizations=1 - hospital_pressure.iloc[-1],
+        vaccines=plan.vaccines,
+    )
+
+
+#
+# Application
+#
+config()
+st.title(
+    "Ferramenta para determinação do impacto da vacinação nas internações por COVID-19"
+)
+r = compute(**read_inputs())
+
+st.header('Resultados')
 st.markdown(
     f"""
-## Resultados
+* **Total de doses:** {int(r.applied_doses):n}
+* **Pessoas vacinadas:** {int(r.applied_doses // 2):n} + {r.initial_doses:n} (inicial)
+* **Óbitos anuais projetados*: ** {r.expected_deaths:n} (com vacina) / {r.expected_deaths_max:n} (sem vacina)
+* **Hospitalizações anuais projetadas*: ** {r.expected_hospitalizations:n} (com vacina) / {r.expected_hospitalizations_max:n} (sem vacina)
+* **Dias de vacinação:** {r.duration}
+* **Redução na hospitalização:** {100 * r.reduced_hospitalizations:.1f}%
+* **Redução dos óbitos:** {100 * r.reduced_deaths:.1f}%
 
-* **Total de doses:** {int(result.applied_doses):n}
-* **Pessoas vacinadas:** {int(result.applied_doses // 2):n} + {initial.values.sum():n} (inicial)
-* **Dias de vacinação:** {result.campaign_duration}
-* **Redução na hospitalização:** {100 - 100 * hospital_pressure.iloc[-1]:.1f}%
-* **Redução dos óbitos:** {100 - 100 * death_pressure.iloc[-1]:.1f}%
+&ast; Óbitos e hospitalizações foram projetadas a partir de dados do 
+SIVEP/gripe. Alguns estados não possuem dados confiáveis nestas bases.
 """
 )
 
@@ -178,15 +222,15 @@ st.markdown(
 # Gráficos
 #
 fig, ax = plt.subplots()
-result.plot_hospitalization_pressure_curve(hospital_pressure, as_pressure=True)
+r.plots.plot_hospitalization_pressure_curve(r.hospital_pressure, as_pressure=True)
 st.pyplot(fig)
 
 fig, ax = plt.subplots()
-result.plot_death_pressure_curve(death_pressure, as_pressure=True)
+r.plots.plot_death_pressure_curve(r.death_pressure, as_pressure=True)
 st.pyplot(fig)
 
 fig, ax = plt.subplots()
-result.plot_vaccination_schedule(ax=ax)
+r.plots.plot_vaccination_schedule(ax=ax)
 st.pyplot(fig)
 
 
@@ -233,9 +277,28 @@ emergencial, em caráter experimental, da vacina covid-19 (recombinante) –
 with st.beta_expander("Dados demográficos"):
     df = pd.DataFrame(
         {
-            "Distribuição etária": age_distribution,
-            "Hospitalizações": hospitalizations,
-            "Óbitos": deaths,
+            "Distribuição etária": r.age_distribution,
+            "Hospitalizações": r.hospitalizations,
+            "Óbitos": r.deaths,
         }
     ).dropna()
     st.dataframe(df.iloc[::-1])
+
+with st.beta_expander("Programa vacinal detalhado"):
+    df = r.events.copy()
+    st.dataframe(r.events.rename(columns={
+        'day': 'dia', 'age': 'idade', 'doses': 'doses', 'phase': 'fase',
+        'vaccine_type': 'vacina', 'acc': 'doses acumuladas', 
+        'fraction': 'fração da faixa etária',
+    }))
+    codes = '; '.join(f'{i} = {v.name}' for i, v in enumerate(r.vaccines))
+    st.markdown(f'Obs.: código das vacinas: {codes}')
+
+if r.initial_doses > 0:
+    with st.beta_expander("Vacinas iniciais"):
+        init = r.initial_distribution
+        totals = r.age_distribution.loc[init.index].values
+        st.bar_chart(100 * init.iloc[:, 0] / totals)
+
+
+st.write()
