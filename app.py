@@ -40,7 +40,7 @@ def read_inputs(sb=st.sidebar, st=st) -> dict:
 
     st.header("Planos de vacinação")
     vaccine_plan = st.text_area("Metas de vacinação por faixa etária", "95%")
-    with st.beta_expander("Vacinas já aplicadas"):
+    with st.beta_expander("Vacinas já aplicadas (clique para expandir)"):
         step = 10 if coarse else 5
         placeholder = "\n".join(f"{n}: 0" for n in range(80, 19, -step))
         initial_plan = st.text_area(
