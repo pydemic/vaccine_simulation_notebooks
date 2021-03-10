@@ -176,6 +176,12 @@ def compute(coarse, rate, region, stocks, initial_plan, vaccine_plan, smooth):
     expected_deaths = expected(death_pressure, deaths.sum())
     expected_hospitalizations = expected(hospital_pressure, hospitalizations.sum())
 
+    # Vacinados por faixa etária
+    df = result.events.drop(columns=['day', 'fraction', 'acc'])
+    df = df[df['phase'] == 2].groupby('age').sum()
+    vaccinated = df['doses']
+    st.write(vaccinated)
+
     # Saída
     return SimpleNamespace(
         age_distribution=age_distribution,
@@ -196,6 +202,7 @@ def compute(coarse, rate, region, stocks, initial_plan, vaccine_plan, smooth):
         reduced_deaths=1 - death_pressure.iloc[-1],
         reduced_hospitalizations=1 - hospital_pressure.iloc[-1],
         vaccines=plan.vaccines,
+        vaccinated=vaccinated,
     )
 
 
@@ -258,20 +265,20 @@ especialmente em níveis mais altos de vacinação.
 
 ## Parâmetros utilizados 
 
-1. Eficácia para formas graves da doença COVID-19 = 100%
+1. Eficácia para formas graves da doença COVID-19 = 100% [1,2]
 2. Para o esquema vacinal foram considerados os seguintes intervalos:
-- **Astrazeneca/Fiocruz:** O esquema de imunização é de 2 doses com intervalo máximo de 90 dias entre as doses.
-- **Butantan:** O esquema de imunização é de 2 doses com intervalo máximo de 22 dias entre as doses.
-3. Foram considerados imunizados apenas os indivíduos que tiverem as duas doses da vacina, 
-4. A imunização (soroconversão) ocorre em um período de 28 dias após aplicação da segunda dose
+- **Butantan:** O esquema de imunização é de 2 doses com intervalo máximo de 22 dias entre as doses [1].
+- **Astrazeneca/Fiocruz:** O esquema de imunização é de 2 doses com intervalo máximo de 90 dias entre as doses [2].
+3. Foram considerados imunizados apenas os indivíduos que tiverem as duas doses da vacina [1,2].  
+4. A imunização (soroconversão) ocorre em um período de 28 dias após aplicação da segunda dose [1,2].
 
 ## Referências
 
-Parecer Público de avaliação de solicitação de autorização temporária de uso
+1. Parecer Público de avaliação de solicitação de autorização temporária de uso
 emergencial, em caráter experimental, da vacina adsorvida covid-19 (inativada) –
 [Instituto Butantan](https://www.gov.br/anvisa/pt-br/assuntos/noticias-anvisa/2021/confira-materiais-da-reuniao-extraordinaria-da-dicol/ppam-final-vacina-adsorvida-covid-19-inativada-butantan.pdf)
 
-Parecer Público de avaliação de solicitação de autorização temporária de uso
+2. Parecer Público de avaliação de solicitação de autorização temporária de uso
 emergencial, em caráter experimental, da vacina covid-19 (recombinante) –
 [Fundação Oswaldo Cruz (Fiocruz)](https://www.gov.br/anvisa/pt-br/assuntos/noticias-anvisa/2021/confira-materiais-da-reuniao-extraordinaria-da-dicol/ppam-final-vacina-covid-19-recombinante-fiocruz.pdf)
 """
@@ -285,6 +292,7 @@ with st.beta_expander("Dados demográficos"):
         {
             "Distribuição etária": r.age_distribution,
             "Hospitalizações": r.hospitalizations,
+            "Vacinados (estimado)": r.vaccinated, 
             "Óbitos": r.deaths,
         }
     ).dropna()
