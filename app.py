@@ -180,7 +180,6 @@ def compute(coarse, rate, region, stocks, initial_plan, vaccine_plan, smooth):
     df = result.events.drop(columns=['day', 'fraction', 'acc'])
     df = df[df['phase'] == 2].groupby('age').sum()
     vaccinated = df['doses']
-    st.write(vaccinated)
 
     # Saída
     return SimpleNamespace(
