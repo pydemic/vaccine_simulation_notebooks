@@ -11,34 +11,40 @@ from typing import List, Dict
 sys.path.append(".")
 import vaccines as lib
 
+
 def simple(n):
     st = str(int(n))
-    return int(st[:2] + '0' * max(len(st) - 2, 0))
+    tail = max(len(st) - 2, 0)
+    return int(st[:2] + "0" * tail)
+
 
 def read_inputs(sb=st.sidebar, st=st) -> dict:
     sb.header("Configurações")
     opts = load_regions()
-    region = sb.selectbox("UF", [*opts.keys()], format_func=opts.get, index=len(opts) - 1)
+    region = sb.selectbox(
+        "UF", [*opts.keys()], format_func=opts.get, index=len(opts) - 1
+    )
     population = load_population(region)
 
     sb.subheader("Estoque de doses")
     stock = simple(population * 0.5 / len(lib.VACCINE_DB)) // 1000
     stocks = {
-        vaccine: 1000 * sb.number_input(f"Mil doses ({vaccine})", min_value=0, value=stock)
+        vaccine: 1000
+        * sb.number_input(f"Mil doses ({vaccine})", min_value=0, value=stock)
         for vaccine in lib.VACCINE_DB
     }
 
     sb.subheader("Capacidade de vacinação")
     msg = "Capacidade de vacinação (doses/dia)"
     rate = sb.number_input(msg, min_value=0, value=simple(0.005 * population))
-    
+
     sb.subheader("Opções")
     coarse = sb.checkbox("Agrupar de 10 em 10 anos")
-    smooth=sb.checkbox("Imunidade gradual")
+    smooth = sb.checkbox("Imunidade gradual")
 
     st.header("Planos de vacinação")
     vaccine_plan = st.text_area("Metas de vacinação por faixa etária", "95%")
-    with st.beta_expander('Vacinas já aplicadas'):
+    with st.beta_expander("Vacinas já aplicadas"):
         step = 10 if coarse else 5
         placeholder = "\n".join(f"{n}: 0" for n in range(80, 19, -step))
         initial_plan = st.text_area(
@@ -74,7 +80,7 @@ def config():
         except:
             pass
 
-    setattr(builtins, 'st', st)
+    setattr(builtins, "st", st)
 
 
 @st.cache
@@ -127,11 +133,7 @@ def compute(coarse, rate, region, stocks, initial_plan, vaccine_plan, smooth):
     max_doses = [vaccine_stocks[k] // 2 for k in vaccines]
     total_doses = sum(max_doses)
 
-    delay = {
-        "immunization": [v.immunization_delay for v in vaccines],
-        "second_dose": [v.second_dose_delay for v in vaccines],
-    }
-
+    # Processa valores iniciais de vacina
     initial = lib.parse_plan(initial_plan, age_distribution)
     initial = pd.DataFrame(initial, columns=["age", "value"]).set_index("age")
 
@@ -146,10 +148,16 @@ def compute(coarse, rate, region, stocks, initial_plan, vaccine_plan, smooth):
     )
     result = plan.execute()
 
+    # Recria resultado com duração desejada da simulação
+    delay = {
+        "immunization": [v.immunization_delay for v in vaccines],
+        "second_dose": [v.second_dose_delay for v in vaccines],
+    }
     duration = result.events["day"].max() + sum(max(x) for x in delay.values())
     duration = lib.by_periods(duration, 30)
     result = result.copy(duration=duration)
 
+    # Curvas de redução de pressão
     kwds = {
         "delay": delay["immunization"],
         "smooth": smooth,
@@ -159,6 +167,7 @@ def compute(coarse, rate, region, stocks, initial_plan, vaccine_plan, smooth):
     hospital_pressure = result.damage_curve(hospitalizations, efficiency=eff, **kwds)
     death_pressure = result.damage_curve(deaths, **kwds)
 
+    # Danos esperados com/sem vacina
     def expected(pressure, scale=1):
         res = (pressure / 365).sum()
         if duration >= 365:
@@ -167,10 +176,11 @@ def compute(coarse, rate, region, stocks, initial_plan, vaccine_plan, smooth):
             dt = 365 - duration
             res += dt / 365 * pressure.iloc[-1]
         return scale * res
-    
+
     expected_deaths = expected(death_pressure, deaths.sum())
     expected_hospitalizations = expected(hospital_pressure, hospitalizations.sum())
 
+    # Saída
     return SimpleNamespace(
         age_distribution=age_distribution,
         applied_doses=result.applied_doses,
@@ -202,7 +212,7 @@ st.title(
 )
 r = compute(**read_inputs())
 
-st.header('Resultados')
+st.header("Resultados")
 st.markdown(
     f"""
 * **Total de doses:** {int(r.applied_doses):n}
@@ -268,12 +278,12 @@ emergencial, em caráter experimental, da vacina adsorvida covid-19 (inativada) 
 Parecer Público de avaliação de solicitação de autorização temporária de uso
 emergencial, em caráter experimental, da vacina covid-19 (recombinante) –
 [Fundação Oswaldo Cruz (Fiocruz)](https://www.gov.br/anvisa/pt-br/assuntos/noticias-anvisa/2021/confira-materiais-da-reuniao-extraordinaria-da-dicol/ppam-final-vacina-covid-19-recombinante-fiocruz.pdf)
-
-## Avançado
 """
 )
 
-# Imprime dados
+# Imprime dados avançados e possivelmente locais para baixar CSVs.
+st.subheader('Avançado')
+
 with st.beta_expander("Dados demográficos"):
     df = pd.DataFrame(
         {
@@ -286,13 +296,21 @@ with st.beta_expander("Dados demográficos"):
 
 with st.beta_expander("Programa vacinal detalhado"):
     df = r.events.copy()
-    st.dataframe(r.events.rename(columns={
-        'day': 'dia', 'age': 'idade', 'doses': 'doses', 'phase': 'fase',
-        'vaccine_type': 'vacina', 'acc': 'doses acumuladas', 
-        'fraction': 'fração da faixa etária',
-    }))
-    codes = '; '.join(f'{i} = {v.name}' for i, v in enumerate(r.vaccines))
-    st.markdown(f'Obs.: código das vacinas: {codes}')
+    st.dataframe(
+        r.events.rename(
+            columns={
+                "day": "dia",
+                "age": "idade",
+                "doses": "doses",
+                "phase": "fase",
+                "vaccine_type": "vacina",
+                "acc": "doses acumuladas",
+                "fraction": "fração da faixa etária",
+            }
+        )
+    )
+    codes = "; ".join(f"{i} = {v.name}" for i, v in enumerate(r.vaccines))
+    st.markdown(f"Obs.: código das vacinas: {codes}")
 
 if r.initial_doses > 0:
     with st.beta_expander("Vacinas iniciais"):
