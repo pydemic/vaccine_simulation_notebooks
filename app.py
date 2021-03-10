@@ -1,12 +1,9 @@
-from vaccines.utils import compute_schedule
 from types import SimpleNamespace
 import streamlit as st
 import pandas as pd
-import numpy as np
 import matplotlib.pyplot as plt
 import sys
 import locale
-from typing import List, Dict
 
 sys.path.append(".")
 import vaccines as lib
@@ -26,11 +23,10 @@ def read_inputs(sb=st.sidebar, st=st) -> dict:
     )
     population = load_population(region)
 
-    sb.subheader("Estoque de doses")
-    stock = simple(population * 0.5 / len(lib.VACCINE_DB)) // 1000
+    sb.subheader("Estoque (número de doses)")
+    stock = simple(population * 0.5 / len(lib.VACCINE_DB))
     stocks = {
-        vaccine: 1000
-        * sb.number_input(f"Mil doses ({vaccine})", min_value=0, value=stock)
+        vaccine: sb.number_input(vaccine, min_value=0, value=stock)
         for vaccine in lib.VACCINE_DB
     }
 
@@ -40,7 +36,7 @@ def read_inputs(sb=st.sidebar, st=st) -> dict:
 
     sb.subheader("Opções")
     coarse = sb.checkbox("Agrupar de 10 em 10 anos")
-    smooth = sb.checkbox("Imunidade gradual")
+    smooth = False  # sb.checkbox("Imunidade gradual")
 
     st.header("Planos de vacinação")
     vaccine_plan = st.text_area("Metas de vacinação por faixa etária", "95%")
@@ -317,6 +313,3 @@ if r.initial_doses > 0:
         init = r.initial_distribution
         totals = r.age_distribution.loc[init.index].values
         st.bar_chart(100 * init.iloc[:, 0] / totals)
-
-
-st.write()
