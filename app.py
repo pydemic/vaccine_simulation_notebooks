@@ -26,7 +26,7 @@ def read_inputs(sb=st.sidebar, st=st) -> dict:
     sb.subheader("Estoque (número de doses)")
     stock = simple(population * 0.5 / len(lib.VACCINE_DB))
     stocks = {
-        vaccine: sb.number_input(vaccine, min_value=0, value=stock)
+        vaccine: sb.number_input(vaccine.name, min_value=0, value=stock)
         for vaccine in lib.VACCINE_DB
     }
 
