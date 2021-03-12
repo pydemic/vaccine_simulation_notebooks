@@ -122,10 +122,13 @@ class VaccinationCampaign:
         return ax
 
     def plot_hospitalization_pressure_curve(
-        self, severe, as_pressure=False, ax: Axes=None, **kwargs
+        self, severe, as_pressure=False, ax: Axes=None, minimum=None, **kwargs
     ) -> Tuple[pd.DataFrame, Axes]:
         pressure = severe if as_pressure else self.damage_curve(severe, **kwargs)
         ax = np.minimum(100 * pressure, 99.5).plot(lw=2, ax=ax)
+        if minimum is not None:
+            np.minimum(100 * minimum, 99.5).plot(ls='--', ax=ax)
+
         ax.grid(True)
         ax.set_title(
             "Estimativa de redução de hospitalizações", fontsize=self._title_fontsize
@@ -137,10 +140,13 @@ class VaccinationCampaign:
         return ax
 
     def plot_death_pressure_curve(
-        self, deaths, as_pressure=False, ax: Axes=None, **kwargs
+        self, deaths, as_pressure=False, ax: Axes=None, minimum=None, **kwargs
     ) -> Tuple[pd.DataFrame, Axes]:
         pressure = deaths if as_pressure else self.damage_curve(deaths, **kwargs)
         ax = np.minimum(100 * pressure, 99.5).plot(lw=2, ax=ax)
+        if minimum is not None:
+            np.minimum(100 * minimum, 99.5).plot(ls='--', ax=ax)
+
         ax.grid(True)
         ax.set_title(
             "Estimativa de redução de mortalidade", fontsize=self._title_fontsize

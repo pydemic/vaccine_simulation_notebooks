@@ -48,7 +48,7 @@ def read_inputs(sb=st.sidebar, st=st) -> dict:
 
     sb.subheader("Opções")
     coarse = sb.checkbox("Agrupar de 10 em 10 anos")
-    smooth = False  # sb.checkbox("Imunidade gradual")
+    smooth = sb.checkbox("Considera aumento gradual da imunidade")
 
     st.header("Planos de vacinação")
     vaccine_plan = check_plan(
@@ -189,25 +189,31 @@ def compute(coarse, rate, region, stocks, initial_plan, vaccine_plan, smooth):
         "initial": initial,
     }
     eff = [v.efficiency for v in vaccines]
+
     try:
         hospital_pressure = result.damage_curve(
-            hospitalizations, efficiency=eff, **kwds
+            hospitalizations, efficiency=eff, phase=2, **kwds
         )
-        death_pressure = result.damage_curve(deaths, **kwds)
+        hospital_pressure_min = result.damage_curve(
+            hospitalizations, efficiency=eff, phase=1, **kwds
+        )
+
+        death_pressure = result.damage_curve(deaths, phase=2, **kwds)
+        death_pressure_min = result.damage_curve(deaths, phase=1, **kwds)
+
         expected_deaths = expected(death_pressure, deaths.sum())
         expected_hospitalizations = expected(hospital_pressure, hospitalizations.sum())
+
         reduced_deaths = 1 - death_pressure.iloc[-1]
         reduced_hospitalizations = 1 - hospital_pressure.iloc[-1]
 
-    except Exception as ex:
-        hospital_pressure = None
-        death_pressure = None
+    except Exception as error:
+        hospital_pressure = hospital_pressure_min = None
+        death_pressure = death_pressure_min = None
         expected_deaths = deaths.sum()
         expected_hospitalizations = hospitalizations.sum()
         reduced_deaths = 0
         reduced_hospitalizations = 0
-        error = ex
-        tb = ex.__traceback__
 
     # Vacinados por faixa etária
     df = result.events.drop(columns=["day", "fraction", "acc"])
@@ -215,28 +221,15 @@ def compute(coarse, rate, region, stocks, initial_plan, vaccine_plan, smooth):
     vaccinated = df["doses"]
 
     # Saída
-    return SimpleNamespace(
-        age_distribution=age_distribution,
-        applied_doses=result.applied_doses,
-        death_pressure=death_pressure,
-        deaths=deaths,
-        duration=result.campaign_duration,
-        expected_deaths=int(expected_deaths),
-        expected_deaths_max=int(deaths.sum()),
-        expected_hospitalizations=int(expected_hospitalizations),
-        expected_hospitalizations_max=int(hospitalizations.sum()),
-        events=result.events,
-        hospital_pressure=hospital_pressure,
-        hospitalizations=hospitalizations,
-        initial_distribution=initial,
-        initial_doses=initial.values.sum(),
-        plots=result,
-        reduced_deaths=reduced_deaths,
-        reduced_hospitalizations=reduced_hospitalizations,
-        vaccines=plan.vaccines,
-        vaccinated=vaccinated,
-        error=error,
-    )
+    applied_doses = result.applied_doses
+    duration = result.campaign_duration
+    events = result.events
+    initial_doses = initial.values.sum()
+    expected_deaths_max = int(deaths.sum())
+    expected_hospitalizations_max = int(hospitalizations.sum())
+    vaccines = plan.vaccines
+    del df, kwds, eff, expected
+    return SimpleNamespace(plots=result, **locals())
 
 
 #
@@ -271,11 +264,17 @@ oportunidade de registro dos dados nos sistemas oficiais.
 #
 if not r.error:
     fig, ax = plt.subplots()
-    r.plots.plot_hospitalization_pressure_curve(r.hospital_pressure, as_pressure=True)
+    r.plots.plot_hospitalization_pressure_curve(
+        r.hospital_pressure,
+        as_pressure=True,
+        minimum=r.hospital_pressure_min,
+    )
     st.pyplot(fig)
 
     fig, ax = plt.subplots()
-    r.plots.plot_death_pressure_curve(r.death_pressure, as_pressure=True)
+    r.plots.plot_death_pressure_curve(
+        r.death_pressure, as_pressure=True, minimum=r.death_pressure_min
+    )
     st.pyplot(fig)
 
     fig, ax = plt.subplots()
