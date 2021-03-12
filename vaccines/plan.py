@@ -228,10 +228,12 @@ class MultipleVaccinesRatePlan(Plan):
         rates,
         max_doses=float("inf"),
         phase=1,
+        num_phases=2,
         given_doses=0,
     ):
         super().__init__(steps, age_distribution)
         self.phase = phase
+        self.num_phases = num_phases
         self.rates = list(rates)
         self.vaccines = list(vaccines)
         self.delays = [v.second_dose_delay for v in self.vaccines]
@@ -286,9 +288,10 @@ class MultipleVaccinesRatePlan(Plan):
             events.append(ev)
 
             # Schedule second dose
-            next_day = self.day + self.delays[idx]
-            ev = FullEvent(next_day, age, applied, self.phase + 1, idx)
-            self.schedule[next_day].append(ev)
+            if ev.phase < self.num_phases:
+                next_day = self.day + self.delays[idx]
+                ev = FullEvent(next_day, age, applied, ev.phase + 1, idx)
+                self.schedule[next_day].append(ev)
         else:
             if n > cast(Real, 0):
                 self.pending.appendleft((age, n))

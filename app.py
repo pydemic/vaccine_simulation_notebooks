@@ -3,7 +3,9 @@ import streamlit as st
 import pandas as pd
 import matplotlib.pyplot as plt
 import sys
+import operator
 import locale
+from dataclasses import dataclass, field
 
 sys.path.append(".")
 import vaccines as lib
@@ -15,8 +17,35 @@ def simple(n):
     return int(st[:2] + "0" * tail)
 
 
-def read_inputs(sb=st.sidebar, st=st) -> dict:
-    def check_plan(plan, full=True):
+@dataclass()
+class InputReader:
+    data: dict = field(default_factory=dict)
+    exclude: set = field(default_factory=set)
+    FIELDS = [
+        "region",
+        "stocks",
+        "rate",
+        "coarse",
+        "smooth",
+        "single_dose",
+        "vaccine_plan",
+        "initial_plan",
+    ]
+
+    def ask(self):
+        for field in self.FIELDS:
+            if field not in self.exclude:
+                fn = getattr(self, f"read_{field}")
+                self.data[field] = fn()
+        return self.data
+
+    def __getattr__(self, key):
+        return self.data[key]
+
+    def __getitem__(self, key):
+        return self.data[key]
+
+    def check_plan(self, plan, full=True):
         try:
             _ = [*lib.validate_plan(plan)]
         except SyntaxError as ex:
@@ -28,57 +57,54 @@ def read_inputs(sb=st.sidebar, st=st) -> dict:
                 return "80: 0"
         return plan
 
-    sb.header("Configurações")
-    opts = load_regions()
-    region = sb.selectbox(
-        "UF", [*opts.keys()], format_func=opts.get, index=len(opts) - 1
-    )
-    population = load_population(region)
-
-    sb.subheader("Estoque (número de doses)")
-    stock = simple(population * 0.5 / len(lib.VACCINE_DB))
-    stocks = {
-        vaccine: sb.number_input(vaccine.name, min_value=0, value=stock)
-        for vaccine in lib.VACCINE_DB
-    }
-
-    sb.subheader("Capacidade de vacinação")
-    msg = "Capacidade de vacinação (doses/dia)"
-    rate = sb.number_input(msg, min_value=0, value=simple(0.005 * population))
-
-    sb.subheader("Opções")
-    coarse = sb.checkbox("Agrupar de 10 em 10 anos")
-    smooth = sb.checkbox("Considera aumento gradual da imunidade")
-
-    st.header("Planos de vacinação")
-    vaccine_plan = check_plan(
-        st.text_area("Metas de vacinação por faixa etária", "95%")
-    )
-
-    with st.beta_expander("Vacinas já aplicadas (clique para expandir)"):
-        step = 10 if coarse else 5
-        placeholder = "\n".join(f"{n}: 0" for n in range(80, 19, -step))
-        initial_plan = check_plan(
-            st.text_area(
-                "Vacinados",
-                f"""
-# Preencha a quantidade de pessoas vacinadas por faixa etária.
-{placeholder}
-        """.strip(),
-                height=225 if coarse else 375,
-            ),
-            full=False,
+    def read_region(self):
+        st.sidebar.header("Configurações")
+        opts = load_regions()
+        return st.sidebar.selectbox(
+            "UF", [*opts.keys()], format_func=opts.get, index=len(opts) - 1
         )
 
-    return {
-        "region": region,
-        "stocks": stocks,
-        "smooth": smooth,
-        "rate": rate,
-        "coarse": coarse,
-        "initial_plan": initial_plan,
-        "vaccine_plan": vaccine_plan,
-    }
+    def read_stocks(self):
+        population = load_population(self["region"])
+        st.sidebar.subheader("Estoque (número de doses)")
+        stock = simple(population * 0.5 / len(lib.VACCINE_DB))
+        return {
+            vaccine: st.sidebar.number_input(vaccine.name, min_value=0, value=stock)
+            for vaccine in lib.VACCINE_DB
+        }
+
+    def read_rate(self):
+        population = load_population(self["region"])
+        st.sidebar.subheader("Capacidade de vacinação")
+        msg = "Capacidade de vacinação (doses/dia)"
+        return st.sidebar.number_input(
+            msg, min_value=0, value=simple(0.005 * population)
+        )
+
+    def read_coarse(self):
+        st.sidebar.subheader("Opções")
+        return st.sidebar.checkbox("Agrupar de 10 em 10 anos")
+
+    def read_smooth(self):
+        return st.sidebar.checkbox("Considera aumento gradual da imunidade")
+
+    def read_single_dose(self):
+        return st.sidebar.checkbox("Aplicar apenas uma dose da vacina")
+
+    def read_vaccine_plan(self):
+        st.header("Planos de vacinação")
+        return self.check_plan(
+            st.text_area("Metas de vacinação por faixa etária", "95%")
+        )
+
+    def read_initial_plan(self):
+        with st.beta_expander("Vacinas já aplicadas (clique para expandir)"):
+            step = 10 if self["coarse"] else 5
+            placeholder = "\n".join(f"{n}: 0" for n in range(80, 19, -step))
+            msg = "# Preencha a quantidade de pessoas vacinadas por faixa etária.\n"
+            height = 225 if self["coarse"] else 375
+            plan = st.text_area("Vacinados", msg + placeholder, height=height)
+            return self.check_plan(plan, full=False)
 
 
 def config():
@@ -136,16 +162,19 @@ def load_regions():
 
 
 @st.cache
-def compute(coarse, rate, region, stocks, initial_plan, vaccine_plan, smooth):
+def compute(
+    coarse, rate, region, stocks, initial_plan, vaccine_plan, smooth, single_dose
+):
     age_distribution = load_age_distribution(region, coarse)
     hospitalizations = load_hospitalizations(region, coarse)
     deaths = load_deaths(region, coarse)
     error = None
 
     # Prepara entradas
+    num_phases = 1 if single_dose else 2
     vaccine_stocks = {k: v for k, v in stocks.items() if v}
     vaccines = [k for k, v in sorted(vaccine_stocks.items(), reverse=True)]
-    max_doses = [vaccine_stocks[k] // 2 for k in vaccines]
+    max_doses = [vaccine_stocks[k] // num_phases for k in vaccines]
     total_doses = sum(max_doses)
 
     # Processa valores iniciais de vacina
@@ -188,7 +217,7 @@ def compute(coarse, rate, region, stocks, initial_plan, vaccine_plan, smooth):
         "smooth": smooth,
         "initial": initial,
     }
-    eff = [v.efficiency for v in vaccines]
+    eff = [v.single_dose_efficiency if single_dose else v.efficiency for v in vaccines]
 
     try:
         hospital_pressure = result.damage_curve(
@@ -239,7 +268,7 @@ config()
 st.title(
     "Ferramenta para determinação do impacto da vacinação nas internações por COVID-19"
 )
-r = compute(**read_inputs())
+r = compute(**(InputReader().ask()))
 
 st.header("Resultados")
 st.markdown(
@@ -267,13 +296,15 @@ if not r.error:
     r.plots.plot_hospitalization_pressure_curve(
         r.hospital_pressure,
         as_pressure=True,
-        minimum=r.hospital_pressure_min,
+        # minimum=r.hospital_pressure_min,
     )
     st.pyplot(fig)
 
     fig, ax = plt.subplots()
     r.plots.plot_death_pressure_curve(
-        r.death_pressure, as_pressure=True, minimum=r.death_pressure_min
+        r.death_pressure,
+        as_pressure=True,
+        # minimum=r.death_pressure_min,
     )
     st.pyplot(fig)
 
