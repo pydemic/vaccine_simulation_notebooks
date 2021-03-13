@@ -77,7 +77,7 @@ class VaccinationCampaign:
 
     def damage_curve(self, damage, phase=2, delay=0, efficiency=1.0) -> pd.DataFrame:
         """
-        Return the damage curve
+        Return the damage curve.
         """
         curves = self.vaccination_curves(phase)
         if len(curves) == 0:
@@ -124,6 +124,7 @@ class VaccinationCampaign:
     def plot_hospitalization_pressure_curve(
         self, severe, as_pressure=False, ax: Axes=None, minimum=None, **kwargs
     ) -> Tuple[pd.DataFrame, Axes]:
+        import streamlit as st; st.write(as_pressure)
         pressure = severe if as_pressure else self.damage_curve(severe, **kwargs)
         ax = np.minimum(100 * pressure, 99.5).plot(lw=2, ax=ax)
         if minimum is not None:
@@ -170,13 +171,16 @@ class MultiVaccineCampaign(VaccinationCampaign):
         """
         Compute damage function for events computed with multiple vaccines.
         """
+        
         events = self.events
         if delay is None:
             delay = [v.immunization_delay for v in self.vaccines]
         if isinstance(delay, Real):
             delay = [delay for _ in range(self.n_vaccines)]
+        if efficiency is None:
+            efficiency = np.array([v.efficiency for v in self.vaccines])
+        efficiency = np.asarray(efficiency)
         
-        efficiency = np.array([v.efficiency for v in self.vaccines])
         damages_acc = np.zeros(self.duration, dtype=float)
 
         if initial is not None:

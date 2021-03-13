@@ -100,7 +100,9 @@ class InputReader:
 
     def read_vaccine_plan(self):
         st.header("Planos de vacinação")
-        with st.beta_expander("Vacinação por faixa etária (clique para expandir)", expanded=True):
+        with st.beta_expander(
+            "Vacinação por faixa etária (clique para expandir)", expanded=True
+        ):
             fn = lambda x: "95%" if x >= 40 else "0%"
             msg = "Metas de vacinação por faixa etária"
             return self.read_plan(msg, fn, self.PLACEHOLDER_VACCINE_PLAN)
@@ -119,7 +121,7 @@ class InputReader:
         steps: List[Tuple[int, str]] = [(80, "80+")]
         steps.extend((n, f"{n}-{n + step - 1}") for n in range(80 - step, 19, -step))
         placeholder += "\n".join(f"{step}: {value(n)}" for n, step in steps)
-        height = 225 if coarse else 375
+        height = 28 * max(4, placeholder.count("\n"))
         plan = st.text_area(msg, placeholder, height=height)
         return self.check_plan(plan, full=False)
 
@@ -178,7 +180,7 @@ def load_regions():
     return db["name"].to_dict()
 
 
-@st.cache
+# @st.cache
 def compute(
     coarse, rate, region, stocks, initial_plan, vaccine_plan, smooth, single_dose
 ):
@@ -204,6 +206,7 @@ def compute(
         age_distribution,
         vaccines,
         initial=initial,
+        num_phases=1 if single_dose else 2,
         rates=[rate * n / total_doses for n in max_doses],
         max_doses=max_doses,
     )
@@ -234,32 +237,38 @@ def compute(
         "smooth": smooth,
         "initial": initial,
     }
-    eff = [v.single_dose_efficiency if single_dose else v.efficiency for v in vaccines]
+    eff = [
+        (v.single_dose_efficiency if single_dose else v.efficiency) for v in vaccines
+    ]
 
     try:
+        phase = 1 if single_dose else 2
         hospital_pressure = result.damage_curve(
-            hospitalizations, efficiency=eff, phase=2, **kwds
+            hospitalizations, efficiency=eff, phase=phase, **kwds
         )
         hospital_pressure_min = result.damage_curve(
             hospitalizations, efficiency=eff, phase=1, **kwds
         )
 
-        death_pressure = result.damage_curve(deaths, phase=2, **kwds)
+        death_pressure = result.damage_curve(deaths, phase=phase, **kwds)
         death_pressure_min = result.damage_curve(deaths, phase=1, **kwds)
 
-        expected_deaths = expected(death_pressure, deaths.sum())
-        expected_hospitalizations = expected(hospital_pressure, hospitalizations.sum())
+        expected_deaths = int(expected(death_pressure, deaths.sum()))
+        expected_hospitalizations = int(
+            expected(hospital_pressure, hospitalizations.sum())
+        )
 
         reduced_deaths = 1 - death_pressure.iloc[-1]
         reduced_hospitalizations = 1 - hospital_pressure.iloc[-1]
 
-    except Exception as error:
+    except Exception as ex:
         hospital_pressure = hospital_pressure_min = None
         death_pressure = death_pressure_min = None
-        expected_deaths = deaths.sum()
-        expected_hospitalizations = hospitalizations.sum()
+        expected_deaths = int(deaths.sum())
+        expected_hospitalizations = int(hospitalizations.sum())
         reduced_deaths = 0
         reduced_hospitalizations = 0
+        error = ex
 
     # Vacinados por faixa etária
     df = result.events.drop(columns=["day", "fraction", "acc"])
@@ -274,6 +283,7 @@ def compute(
     expected_deaths_max = int(deaths.sum())
     expected_hospitalizations_max = int(hospitalizations.sum())
     vaccines = plan.vaccines
+    num_vaccinated = applied_doses // (1 if single_dose else 2)
     del df, kwds, eff, expected
     return SimpleNamespace(plots=result, **locals())
 
@@ -291,7 +301,7 @@ st.header("Resultados")
 st.markdown(
     f"""
 * **Total de doses:** {int(r.applied_doses):n}
-* **Pessoas vacinadas:** {int(r.applied_doses // 2):n} + {r.initial_doses:n} (inicial)
+* **Pessoas vacinadas:** {int(r.num_vaccinated):n} + {r.initial_doses:n} (inicial)
 * **Óbitos anuais projetados*: ** {r.expected_deaths:n} (com vacina) / {r.expected_deaths_max:n} (sem vacina)
 * **Hospitalizações anuais projetadas*: ** {r.expected_hospitalizations:n} (com vacina) / {r.expected_hospitalizations_max:n} (sem vacina)
 * **Dias de vacinação:** {r.duration}
