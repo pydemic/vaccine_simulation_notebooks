@@ -5,10 +5,13 @@ import matplotlib.pyplot as plt
 import sys
 import operator
 import locale
+from typing import List, Tuple
 from dataclasses import dataclass, field
 
 sys.path.append(".")
 import vaccines as lib
+
+cte = lambda x: lambda *args: x
 
 
 def simple(n):
@@ -31,6 +34,10 @@ class InputReader:
         "vaccine_plan",
         "initial_plan",
     ]
+    PLACEHOLDER_VACCINE_PLAN = (
+        "# Preencha meta de vacinação de cada faixa etária como porcentagem\n"
+        "# da população em cada faixa.\n"
+    )
 
     def ask(self):
         for field in self.FIELDS:
@@ -89,22 +96,32 @@ class InputReader:
         return st.sidebar.checkbox("Considera aumento gradual da imunidade")
 
     def read_single_dose(self):
-        return st.sidebar.checkbox("Aplicar apenas uma dose da vacina")
+        return st.sidebar.checkbox("Impacto com a primeira dose")
 
     def read_vaccine_plan(self):
         st.header("Planos de vacinação")
-        return self.check_plan(
-            st.text_area("Metas de vacinação por faixa etária", "95%")
-        )
+        with st.beta_expander("Vacinação por faixa etária (clique para expandir)", expanded=True):
+            fn = lambda x: "95%" if x >= 40 else "0%"
+            msg = "Metas de vacinação por faixa etária"
+            return self.read_plan(msg, fn, self.PLACEHOLDER_VACCINE_PLAN)
 
     def read_initial_plan(self):
         with st.beta_expander("Vacinas já aplicadas (clique para expandir)"):
-            step = 10 if self["coarse"] else 5
-            placeholder = "\n".join(f"{n}: 0" for n in range(80, 19, -step))
-            msg = "# Preencha a quantidade de pessoas vacinadas por faixa etária.\n"
-            height = 225 if self["coarse"] else 375
-            plan = st.text_area("Vacinados", msg + placeholder, height=height)
-            return self.check_plan(plan, full=False)
+            placeholder = (
+                "# Preencha a quantidade de pessoas já vacinadas por faixa etária.\n"
+            )
+            return self.read_plan("Vacinados", 0, placeholder)
+
+    def read_plan(self, msg, value, placeholder=""):
+        coarse = self.data.get("coarse", False)
+        step = 10 if coarse else 5
+        value = value if callable(value) else cte(value)
+        steps: List[Tuple[int, str]] = [(80, "80+")]
+        steps.extend((n, f"{n}-{n + step - 1}") for n in range(80 - step, 19, -step))
+        placeholder += "\n".join(f"{step}: {value(n)}" for n, step in steps)
+        height = 225 if coarse else 375
+        plan = st.text_area(msg, placeholder, height=height)
+        return self.check_plan(plan, full=False)
 
 
 def config():
