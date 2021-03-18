@@ -3,15 +3,48 @@ import streamlit as st
 import pandas as pd
 import matplotlib.pyplot as plt
 import sys
-import operator
 import locale
-from typing import List, Tuple
+from typing import List, Tuple, Callable, TypeVar, Generic, overload
 from dataclasses import dataclass, field
 
 sys.path.append(".")
 import vaccines as lib
 
 cte = lambda x: lambda *args: x
+
+
+T1, T2 = TypeVar("T1"), TypeVar("T2")
+
+
+class cached_property(Generic[T1, T2]):
+    """A quick and dirt cached property"""
+
+    _name: str
+
+    def __init__(self, func: Callable[[T1], T2]):
+        self._func = func
+
+    @overload
+    def __get__(self, obj: None, cls=None) -> "cached_property":
+        ...
+
+    @overload
+    def __get__(self, obj: T1, cls=None) -> T2:
+        ...
+
+    def __get__(self, obj, cls=None):
+        if obj is None:
+            return self
+        try:
+            return obj.__dict__[self._name]
+        except KeyError:
+            value = self._func(obj)
+            setattr(obj, self._name, value)
+            return value
+
+    def __set_name__(self, cls, name):
+        if not hasattr(self, "_name"):
+            self._name = name
 
 
 def simple(n):
@@ -180,49 +213,158 @@ def load_regions():
     return db["name"].to_dict()
 
 
-# @st.cache
-def compute(
-    coarse, rate, region, stocks, initial_plan, vaccine_plan, smooth, single_dose
-):
-    age_distribution = load_age_distribution(region, coarse)
-    hospitalizations = load_hospitalizations(region, coarse)
-    deaths = load_deaths(region, coarse)
-    error = None
-
-    # Prepara entradas
-    num_phases = 1 if single_dose else 2
-    vaccine_stocks = {k: v for k, v in stocks.items() if v}
-    vaccines = [k for k, v in sorted(vaccine_stocks.items(), reverse=True)]
-    max_doses = [vaccine_stocks[k] // num_phases for k in vaccines]
-    total_doses = sum(max_doses)
-
-    # Processa valores iniciais de vacina
-    initial = lib.parse_plan(initial_plan, age_distribution)
-    initial = pd.DataFrame(initial, columns=["age", "value"]).set_index("age")
-
-    # Simula plano e calcula resultados
-    plan = lib.MultipleVaccinesRatePlan.from_source(
+class Job:
+    def __init__(
+        self,
+        coarse,
+        rate,
+        region,
+        stocks,
+        initial_plan,
         vaccine_plan,
-        age_distribution,
-        vaccines,
-        initial=initial,
-        num_phases=1 if single_dose else 2,
-        rates=[rate * n / total_doses for n in max_doses],
-        max_doses=max_doses,
-    )
-    result = plan.execute()
+        smooth,
+        single_dose,
+    ):
+        self.coarse = coarse
+        self.rate = rate
+        self.region = region
+        self.stocks = stocks
+        self.initial_plan = initial_plan
+        self.vaccine_plan = vaccine_plan
+        self.smooth = smooth
+        self.single_dose = single_dose
 
-    # Recria resultado com duração desejada da simulação
-    delay = {
-        "immunization": [v.immunization_delay for v in vaccines],
-        "second_dose": [v.second_dose_delay for v in vaccines],
-    }
-    duration = result.events["day"].max() + sum(max(x) for x in delay.values())
-    duration = lib.by_periods(duration, 30)
-    result = result.copy(duration=duration)
+        self.error = False
+        self.age_distribution = load_age_distribution(self.region, self.coarse)
+        self.hospitalizations = load_hospitalizations(self.region, self.coarse)
+        self.deaths = load_deaths(self.region, self.coarse)
 
-    # Danos esperados com/sem vacina
-    def expected(pressure, scale=1):
+        # Processa valores iniciais de vacina
+        initial = lib.parse_plan(self.initial_plan, self.age_distribution)
+        initial = pd.DataFrame(initial, columns=["age", "value"]).set_index("age")
+        self.initial = initial
+
+        # Inicializa simulação
+        self._init_eager()
+
+    def _init_eager(self):
+        self._run_simulation()
+        self._extract_pressure_functions()
+        self._extract_expected_values()
+
+    def _run_simulation(self):
+        """
+        Execute plan
+        """
+        # Prepara entradas da simulação
+        num_phases = 1 if self.single_dose else 2
+        max_doses = [self.vaccine_stocks[k] // num_phases for k in self.vaccines]
+        total_doses = sum(max_doses)
+
+        # Simula plano e calcula resultados
+        plan = lib.MultipleVaccinesRatePlan.from_source(
+            self.vaccine_plan,
+            self.age_distribution,
+            self.vaccines,
+            initial=self.initial,
+            num_phases=num_phases,
+            rates=[self.rate * n / total_doses for n in max_doses],
+            max_doses=max_doses,
+        )
+        result = plan.execute()
+
+        # Recria resultado com duração desejada da simulação
+        delay = self.get_delay(self.vaccines)
+        duration = result.events["day"].max() + sum(max(x) for x in delay.values())
+        self.duration = lib.by_periods(duration, 30)
+        self.result = self.plots = result.copy(duration=self.duration)
+
+        # Propriedades derivadas
+        self.applied_doses = self.result.applied_doses
+        self.events = self.result.events
+
+    def _extract_pressure_functions(self):
+        """
+        Extract pressure functions from simulation.
+
+        Must execute plan before running this function.
+        """
+        if self.single_dose:
+            eff = [v.efficiency for v in self.vaccines]
+        else:
+            eff = [v.single_dose_efficiency for v in self.vaccines]
+
+        delay = self.get_delay(self.vaccines)
+        phase = 1 if self.single_dose else 2
+        kwds = {
+            "delay": delay["immunization"],
+            "smooth": self.smooth,
+            "initial": self.initial,
+            "efficiency": eff,
+        }
+
+        df = self.result.damage_curve(self.hospitalizations, **kwds)
+        self.hospital_pressure = df
+
+        df = self.result.damage_curve(self.hospitalizations, phase=1, **kwds)
+        self.hospital_pressure_min = df
+
+        df = self.result.damage_curve(self.deaths, phase=phase, **kwds)
+        self.death_pressure = df
+
+        df = self.result.damage_curve(self.deaths, phase=1, **kwds)
+        self.death_pressure_min = df
+
+    def _extract_expected_values(self):
+        """
+        Derive hospitalizations/deaths from pressure curves.
+        """
+        self.expected_deaths_max = int(self.deaths.sum())
+        self.expected_hospitalizations_max = int(self.hospitalizations.sum())
+
+        n = int(self.expected_damage(self.death_pressure, self.deaths.sum()))
+        self.expected_deaths = n 
+
+        n = int(self.expected_damage(self.hospital_pressure, self.hospitalizations.sum()))
+        self.expected_hospitalizations = n
+
+        self.reduced_deaths = 1 - self.death_pressure.iloc[-1]
+        self.reduced_hospitalizations = 1 - self.hospital_pressure.iloc[-1]
+
+
+    def get_delay(self, vaccines):
+        return {
+            "immunization": [v.immunization_delay for v in vaccines],
+            "second_dose": [v.second_dose_delay for v in vaccines],
+        }
+
+    # Simulation inputs
+    @cached_property
+    def vaccine_stocks(self) -> dict:
+        return {k: v for k, v in self.stocks.items() if v}
+
+    @cached_property
+    def vaccines(self):
+        return [k for k, _ in sorted(self.vaccine_stocks.items(), reverse=True)]
+
+    @cached_property
+    def num_vaccinated(self):
+        return self.applied_doses // (1 if self.single_dose else 2)
+
+    @cached_property
+    def initial_doses(self):
+        return self.initial.values.sum()
+
+    @cached_property
+    def vaccinated(self):
+        df = self.result.events.drop(columns=["day", "fraction", "acc"])
+        df = df[df["phase"] == 2].groupby("age").sum()
+        return df["doses"]
+
+    def expected_damage(self, pressure, duration, scale=1):
+        """
+        Danos esperados com/sem vacina
+        """
         res = (pressure / 365).sum()
         if duration >= 365:
             res *= 365 / duration
@@ -231,61 +373,13 @@ def compute(
             res += dt / 365 * pressure.iloc[-1]
         return scale * res
 
-    # Curvas de redução de pressão
-    kwds = {
-        "delay": delay["immunization"],
-        "smooth": smooth,
-        "initial": initial,
-    }
-    eff = [
-        (v.single_dose_efficiency if single_dose else v.efficiency) for v in vaccines
-    ]
 
-    try:
-        phase = 1 if single_dose else 2
-        hospital_pressure = result.damage_curve(
-            hospitalizations, efficiency=eff, phase=phase, **kwds
-        )
-        hospital_pressure_min = result.damage_curve(
-            hospitalizations, efficiency=eff, phase=1, **kwds
-        )
-
-        death_pressure = result.damage_curve(deaths, phase=phase, **kwds)
-        death_pressure_min = result.damage_curve(deaths, phase=1, **kwds)
-
-        expected_deaths = int(expected(death_pressure, deaths.sum()))
-        expected_hospitalizations = int(
-            expected(hospital_pressure, hospitalizations.sum())
-        )
-
-        reduced_deaths = 1 - death_pressure.iloc[-1]
-        reduced_hospitalizations = 1 - hospital_pressure.iloc[-1]
-
-    except Exception as ex:
-        hospital_pressure = hospital_pressure_min = None
-        death_pressure = death_pressure_min = None
-        expected_deaths = int(deaths.sum())
-        expected_hospitalizations = int(hospitalizations.sum())
-        reduced_deaths = 0
-        reduced_hospitalizations = 0
-        error = ex
-
-    # Vacinados por faixa etária
-    df = result.events.drop(columns=["day", "fraction", "acc"])
-    df = df[df["phase"] == 2].groupby("age").sum()
-    vaccinated = df["doses"]
-
-    # Saída
-    applied_doses = result.applied_doses
-    duration = result.campaign_duration
-    events = result.events
-    initial_doses = initial.values.sum()
-    expected_deaths_max = int(deaths.sum())
-    expected_hospitalizations_max = int(hospitalizations.sum())
-    vaccines = plan.vaccines
-    num_vaccinated = applied_doses // (1 if single_dose else 2)
-    del df, kwds, eff, expected
-    return SimpleNamespace(plots=result, **locals())
+# @st.cache
+def compute(
+    coarse, rate, region, stocks, initial_plan, vaccine_plan, smooth, single_dose
+):
+    job = Job(**locals())
+    return job
 
 
 #

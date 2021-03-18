@@ -1,10 +1,10 @@
 from dataclasses import dataclass, field
-import pandas as pd
+from typing import Optional, Sequence, Tuple, Union
+
 import numpy as np
-import matplotlib.pyplot as plt
+import pandas as pd
 from matplotlib.axes import Axes
-from typing import Optional, Tuple, Sequence
-from numbers import Real
+
 from .vaccine import Vaccine
 
 
@@ -92,7 +92,7 @@ class VaccinationCampaign:
     #
     # Plot vaccine curves
     #
-    def plot_vaccination_schedule(self, ax: Axes=None, **kwargs):
+    def plot_vaccination_schedule(self, ax: Axes = None, **kwargs):
         """
         Plot campaign schedule.
         """
@@ -111,9 +111,7 @@ class VaccinationCampaign:
             }
         ).sort_index(ascending=False)
 
-        ax = df.plot.barh(
-            stacked=True, grid=True, color=["0.9", "0.7", "g"], ax=ax
-        )
+        ax = df.plot.barh(stacked=True, grid=True, color=["0.9", "0.7", "g"], ax=ax)
         ax.set_xlim(0, duration)
         ax.set_title("Calendário de vacinação", fontsize=self._title_fontsize)
         ax.set_xlabel("Etapa da campanha (dias)")
@@ -122,13 +120,13 @@ class VaccinationCampaign:
         return ax
 
     def plot_hospitalization_pressure_curve(
-        self, severe, as_pressure=False, ax: Axes=None, minimum=None, **kwargs
+        self, severe, as_pressure=False, ax: Axes = None, minimum=None, **kwargs
     ) -> Tuple[pd.DataFrame, Axes]:
-        import streamlit as st; st.write(as_pressure)
+
         pressure = severe if as_pressure else self.damage_curve(severe, **kwargs)
         ax = np.minimum(100 * pressure, 99.5).plot(lw=2, ax=ax)
         if minimum is not None:
-            np.minimum(100 * minimum, 99.5).plot(ls='--', ax=ax)
+            np.minimum(100 * minimum, 99.5).plot(ls="--", ax=ax)
 
         ax.grid(True)
         ax.set_title(
@@ -141,12 +139,12 @@ class VaccinationCampaign:
         return ax
 
     def plot_death_pressure_curve(
-        self, deaths, as_pressure=False, ax: Axes=None, minimum=None, **kwargs
+        self, deaths, as_pressure=False, ax: Axes = None, minimum=None, **kwargs
     ) -> Tuple[pd.DataFrame, Axes]:
         pressure = deaths if as_pressure else self.damage_curve(deaths, **kwargs)
         ax = np.minimum(100 * pressure, 99.5).plot(lw=2, ax=ax)
         if minimum is not None:
-            np.minimum(100 * minimum, 99.5).plot(ls='--', ax=ax)
+            np.minimum(100 * minimum, 99.5).plot(ls="--", ax=ax)
 
         ax.grid(True)
         ax.set_title(
@@ -158,48 +156,57 @@ class VaccinationCampaign:
         ax.set_xlim(0, self._duration)
         return ax
 
+
 @dataclass
 class MultiVaccineCampaign(VaccinationCampaign):
-    vaccines: Sequence['Vaccine'] = ()
+    vaccines: Sequence["Vaccine"] = ()
     age_distribution: pd.Series = None
 
     @property
     def n_vaccines(self):
         return len(self.vaccines)
 
-    def damage_curve(self, damage, phase=2, delay=None, smooth=False, initial=None, efficiency=None) -> pd.Series:
+    def damage_curve(
+        self,
+        damage,
+        phase=2,
+        delay: Union[Sequence[int], int] = None,
+        smooth=False,
+        initial=None,
+        efficiency=None,
+    ) -> pd.Series:
         """
         Compute damage function for events computed with multiple vaccines.
         """
-        
+
         events = self.events
         if delay is None:
             delay = [v.immunization_delay for v in self.vaccines]
-        if isinstance(delay, Real):
+        if isinstance(delay, int):
             delay = [delay for _ in range(self.n_vaccines)]
         if efficiency is None:
             efficiency = np.array([v.efficiency for v in self.vaccines])
         efficiency = np.asarray(efficiency)
-        
-        damages_acc = np.zeros(self.duration, dtype=float)
+
+        damages_acc = np.zeros(self.duration or 0, dtype=float)
 
         if initial is not None:
-            col = 'vaccine_type'
-            weights = events[['doses', col]].groupby(col).sum().values
+            col = "vaccine_type"
+            weights = events[["doses", col]].groupby(col).sum().values
             weights /= weights.sum()
             eff = efficiency.dot(weights)
-            
+
             value = 0.0
             for age, doses in zip(initial.index, initial.values):
                 ratio = doses / self.age_distribution.loc[age]
                 value += damage.loc[age] * ratio * eff
-            
+
             damages_acc += value
 
         if smooth:
             kernel = np.zeros((max(delay), self.n_vaccines))
             for key, step in enumerate(delay):
-                kernel[:delay[key], key] = np.linspace(0, 1, step)
+                kernel[: delay[key], key] = np.linspace(0, 1, step)
         else:
             kernel = None
 
@@ -211,11 +218,11 @@ class MultiVaccineCampaign(VaccinationCampaign):
             vaccine_delay = delay[key]
 
             if kernel is None:
-                damages_acc[day + vaccine_delay:] += value
+                damages_acc[day + vaccine_delay :] += value
             else:
                 interval = min(delay[key], self.duration - day)
-                damages_acc[day:day + interval] += (kernel[:, key] * value)[:interval]
-                damages_acc[day + interval:] += value
+                damages_acc[day : day + interval] += (kernel[:, key] * value)[:interval]
+                damages_acc[day + interval :] += value
 
         damages_acc /= -damage.sum()
         damages_acc += 1
