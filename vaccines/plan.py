@@ -217,14 +217,11 @@ class MultipleVaccinesRatePlan(Plan):
     Multiple vaccines
     """
 
-    rates: List[Real]
-    max_doses: List[Real]
-    given_doses: List[Real]
-    delays: List[int]
+    
+    
     schedule: Dict[int, List[FullEvent]]
-    phase: int
     events: List[FullEvent]
-    vaccines: List[Vaccine]
+    
     _column_names = [*Plan._column_names, "vaccine_type"]
     _result = MultiVaccineCampaign
     _event = FullEvent
@@ -246,22 +243,24 @@ class MultipleVaccinesRatePlan(Plan):
         given_doses=0,
     ):
         super().__init__(steps, age_distribution)
-        self.phase = phase
+        self.phase: int = phase
         self.num_phases = num_phases
-        self.rates = list(rates)
-        self.vaccines = list(vaccines)
-        self.delays = [v.second_dose_delay for v in self.vaccines]
+        self.rates: List[Real] = list(rates)
+        self.vaccines: List[Vaccine] = list(vaccines)
+        self.delays: List[int] = [v.second_dose_delay for v in self.vaccines]
         self.schedule = defaultdict(list)
 
+        self.max_doses: List[Real] = []
         if isinstance(max_doses, Real):
-            self.max_doses = [max_doses for _ in self.rates]
+            self.max_doses.extend(max_doses for _ in self.rates)
         else:
-            self.max_doses = list(max_doses)
+            self.max_doses.extend(max_doses)
 
+        self.given_doses: List[Real] = []
         if isinstance(given_doses, Real):
-            self.given_doses = [given_doses for _ in self.rates]
+            self.given_doses.extend(given_doses for _ in self.rates)
         else:
-            self.given_doses = list(given_doses)
+            self.given_doses.extend(given_doses)
 
     def is_complete(self) -> bool:
         return len(self.schedule) == 0 and (

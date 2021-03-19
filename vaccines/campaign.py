@@ -7,6 +7,8 @@ from matplotlib.axes import Axes
 
 from .vaccine import Vaccine
 
+Pandas = Union[pd.Series, pd.DataFrame]
+
 
 @dataclass(frozen=False)
 class VaccinationCampaign:
@@ -19,15 +21,15 @@ class VaccinationCampaign:
     style: dict = field(default_factory=dict)
 
     @property
-    def _duration(self):
+    def _duration(self) -> int:
         return self.campaign_duration if self.duration is None else self.duration
 
     @property
-    def campaign_duration(self):
-        return self.events["day"].max()
+    def campaign_duration(self) -> int:
+        return self.events["day"].max()  # type: ignore
 
     @property
-    def applied_doses(self):
+    def applied_doses(self) -> float:
         return self.events["doses"].sum()
 
     @property
@@ -51,7 +53,7 @@ class VaccinationCampaign:
         Return a Series with duration to start vaccination of each age cohoort.
         """
         events = self.events
-        df = events[["day", "age", "fraction"]][events["phase"] == 1]
+        df = events.loc[events["phase"] == 1, ["day", "age", "fraction"]]
         df = df[df["fraction"] > tol].drop(columns="fraction")
         return df.groupby("age").min()["day"] + delay
 
@@ -60,7 +62,7 @@ class VaccinationCampaign:
         Return a Series with duration to start vaccination of each age cohoort.
         """
         events = self.events
-        df = events[["day", "age", "fraction"]][events["phase"] == 2]
+        df = events.loc[events["phase"] == 2, ["day", "age", "fraction"]]
         df = df[df["fraction"] > minimum].drop(columns="fraction")
         return df.groupby("age").max()["day"] + delay
 
@@ -72,20 +74,26 @@ class VaccinationCampaign:
         """
         events = self.events
         columns = ["day", "age", "fraction"]
-        filtered = events[columns][events["phase"] == phase]
+        filtered = events.loc[events["phase"] == phase, columns]
         return filtered.pivot(*columns).fillna(method="pad").fillna(0.0)
 
-    def damage_curve(self, damage, phase=2, delay=0, efficiency=1.0) -> pd.DataFrame:
+    def damage_curve(
+        self, damage, phase=2, delay=0, efficiency=1.0, initial=0
+    ) -> pd.Series:
         """
         Return the damage curve.
         """
+        if initial is not None:
+            raise NotImplementedError
+
         curves = self.vaccination_curves(phase)
         if len(curves) == 0:
             return pd.Series([], dtype=float)
+
         total = damage.sum()
-        curve = (
-            total - (curves * efficiency * damage.loc[curves.columns]).sum(1)
-        ) / total
+        reduction = (curves * efficiency * damage.loc[curves.columns]).sum(1)
+        curve = (total - reduction) / total
+
         curve.index += delay
         return curve.reindex(self._days_index).fillna(method="pad").fillna(1.0)
 
@@ -107,7 +115,7 @@ class VaccinationCampaign:
             {
                 "sem vacinação": start,
                 "vacinado (1a dose)": end - start,
-                "vacinado (2 doses)": duration - end,
+                "vacinado (2 doses)": duration - end,  # type: ignore
             }
         ).sort_index(ascending=False)
 
@@ -120,47 +128,60 @@ class VaccinationCampaign:
         return ax
 
     def plot_hospitalization_pressure_curve(
-        self, severe, as_pressure=False, ax: Axes = None, minimum=None, **kwargs
-    ) -> Tuple[pd.DataFrame, Axes]:
-
-        pressure = severe if as_pressure else self.damage_curve(severe, **kwargs)
-        ax = np.minimum(100 * pressure, 99.5).plot(lw=2, ax=ax)
-        if minimum is not None:
-            np.minimum(100 * minimum, 99.5).plot(ls="--", ax=ax)
-
-        ax.grid(True)
-        ax.set_title(
-            "Estimativa de redução de hospitalizações", fontsize=self._title_fontsize
-        )
-        ax.set_xlabel("tempo (dias)")
+        self, pressure: Pandas, ax: Axes = None
+    ) -> Axes:
+        title = "Estimativa de redução de hospitalizações"
+        ax = self._plot_pressure_curve(pressure, title, ax)
         ax.set_ylabel("pressão hospitalar (%)")
-        ax.set_ylim(0, 100)
-        ax.set_xlim(0, self._duration)
         return ax
 
-    def plot_death_pressure_curve(
-        self, deaths, as_pressure=False, ax: Axes = None, minimum=None, **kwargs
-    ) -> Tuple[pd.DataFrame, Axes]:
-        pressure = deaths if as_pressure else self.damage_curve(deaths, **kwargs)
-        ax = np.minimum(100 * pressure, 99.5).plot(lw=2, ax=ax)
-        if minimum is not None:
-            np.minimum(100 * minimum, 99.5).plot(ls="--", ax=ax)
-
-        ax.grid(True)
-        ax.set_title(
-            "Estimativa de redução de mortalidade", fontsize=self._title_fontsize
-        )
-        ax.set_xlabel("tempo (dias)")
+    def plot_death_pressure_curve(self, pressure: Pandas, ax: Axes = None) -> Axes:
+        title = "Estimativa de redução de mortalidade"
+        ax = self._plot_pressure_curve(pressure, title, ax)
         ax.set_ylabel("mortalidade (%)")
+        return ax
+
+    def _plot_pressure_curve(
+        self, pressure: Pandas, title: str, ax: Axes = None, styles: dict = None
+    ) -> Axes:
+        df = np.minimum(100 * pressure, 99.5)
+
+        if isinstance(df, pd.DataFrame):
+            if styles is None:
+                styles = {pressure.columns[0]: {"lw": 2}}
+
+            for name, col in df.items():
+                opts = styles.get(name, {"ls": "--"})  #  type: ignore
+                ax = col.plot(ax=ax, label=name, **opts)
+        else:
+            ax = df.plot(lw=2, ax=ax)
+
+        if ax is None:
+            raise ValueError("cannot plot empty dataframe")
+
+        ax.set_title(title, fontsize=self._title_fontsize)
+        ax.set_xlabel("tempo (dias)")
+        ax.set_xlabel("pressão (%)")
+        ax.grid(True)
         ax.set_ylim(0, 100)
         ax.set_xlim(0, self._duration)
         return ax
 
 
-@dataclass
 class MultiVaccineCampaign(VaccinationCampaign):
-    vaccines: Sequence["Vaccine"] = ()
-    age_distribution: pd.Series = None
+    __dataclass_fields__ = {
+        **VaccinationCampaign.__dataclass_fields__,  # type: ignore
+        "age_distribution": field(),
+        "vaccines": field(),
+    }
+
+    age_distribution: pd.Series
+    vaccines: Sequence["Vaccine"]
+
+    def __init__(self, events, age_distribution, vaccines, **kwargs):
+        super().__init__(events, **kwargs)
+        self.age_distribution = age_distribution
+        self.vaccines = vaccines
 
     @property
     def n_vaccines(self):
@@ -168,31 +189,90 @@ class MultiVaccineCampaign(VaccinationCampaign):
 
     def damage_curve(
         self,
-        damage,
+        damage: pd.Series,
         phase=2,
         delay: Union[Sequence[int], int] = None,
-        smooth=False,
         initial=None,
-        efficiency=None,
+        efficiency: Union[Sequence[int], int] = None,
     ) -> pd.Series:
         """
         Compute damage function for events computed with multiple vaccines.
         """
 
+        res = self._init_damage_curve_params(damage, delay, initial, efficiency)
+        reduction_acc, delay, efficiency = res
         events = self.events
+
+        mask = events["phase"] == phase
+        rows = events.loc[mask, ["day", "age", "doses", "vaccine_type"]]
+        for (day, age, doses, key) in rows.values:
+            day, age, key = map(int, [day, age, key])
+            ratio = doses / self.age_distribution.loc[age]
+            value = damage.loc[age] * ratio * efficiency[key]
+            vaccine_delay = delay[key]
+            reduction_acc[day + vaccine_delay :] += value
+        
+        reduction_acc /= -damage.sum()
+        reduction_acc += 1
+
+        return pd.Series(reduction_acc, index=range(len(reduction_acc)))
+
+    def expected_damage_curve(
+        self,
+        damage,
+        phase,
+        delay: Union[Sequence[int], int],
+        initial,
+        efficiency: Union[Sequence[int], int],
+    ) -> pd.Series:
+        res = self._init_damage_curve_params(damage, delay, initial, efficiency)
+        reduction_acc, delay, efficiency = res
+        events = self.events
+
+        kernel = np.zeros((max(delay), self.n_vaccines))
+        for key, step in enumerate(delay):
+            kernel[: delay[key], key] = np.linspace(0, 1, step)
+        # st.line_chart(kernel)
+
+        mask = events["phase"] == phase
+        rows = events.loc[mask, ["day", "age", "doses", "vaccine_type"]]
+        for (day, age, doses, key) in rows.values:
+            day, age, key = map(int, [day, age, key])
+            ratio = doses / self.age_distribution.loc[age]
+            value = damage.loc[age] * ratio * efficiency[key]
+
+            interval = min(delay[key], self._duration - day)
+            acc = (kernel[:, key] * value)[:interval]
+            reduction_acc[day : day + interval] += acc
+            reduction_acc[day + interval :] += value
+
+        reduction_acc /= -damage.sum()
+        reduction_acc += 1
+
+        return pd.Series(reduction_acc, index=range(len(reduction_acc)))
+
+    def _init_damage_curve_params(
+        self,
+        damage: pd.Series,
+        delay: Union[Sequence[int], int],
+        initial,
+        efficiency: Union[Sequence[int], int],
+    ):
         if delay is None:
             delay = [v.immunization_delay for v in self.vaccines]
         if isinstance(delay, int):
             delay = [delay for _ in range(self.n_vaccines)]
+
         if efficiency is None:
             efficiency = np.array([v.efficiency for v in self.vaccines])
         efficiency = np.asarray(efficiency)
 
-        damages_acc = np.zeros(self.duration or 0, dtype=float)
+        # We accumulate the contribution of each vaccine in this array
+        reduction_acc = np.zeros(self._duration or 0, dtype=float)
 
         if initial is not None:
             col = "vaccine_type"
-            weights = events[["doses", col]].groupby(col).sum().values
+            weights = self.events[["doses", col]].groupby(col).sum().values
             weights /= weights.sum()
             eff = efficiency.dot(weights)
 
@@ -201,30 +281,6 @@ class MultiVaccineCampaign(VaccinationCampaign):
                 ratio = doses / self.age_distribution.loc[age]
                 value += damage.loc[age] * ratio * eff
 
-            damages_acc += value
+            reduction_acc += value
 
-        if smooth:
-            kernel = np.zeros((max(delay), self.n_vaccines))
-            for key, step in enumerate(delay):
-                kernel[: delay[key], key] = np.linspace(0, 1, step)
-        else:
-            kernel = None
-
-        rows = events[events["phase"] == phase][["day", "age", "doses", "vaccine_type"]]
-        for (day, age, doses, key) in rows.values:
-            day, age, key = map(int, [day, age, key])
-            ratio = doses / self.age_distribution.loc[age]
-            value = damage.loc[age] * ratio * efficiency[key]
-            vaccine_delay = delay[key]
-
-            if kernel is None:
-                damages_acc[day + vaccine_delay :] += value
-            else:
-                interval = min(delay[key], self.duration - day)
-                damages_acc[day : day + interval] += (kernel[:, key] * value)[:interval]
-                damages_acc[day + interval :] += value
-
-        damages_acc /= -damage.sum()
-        damages_acc += 1
-
-        return pd.Series(damages_acc, index=range(len(damages_acc)))
+        return (reduction_acc, delay, efficiency)
