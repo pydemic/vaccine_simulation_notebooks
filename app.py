@@ -344,10 +344,10 @@ class Job:
         self.expected_deaths_max = int(self.deaths.sum())
         self.expected_hospitalizations_max = int(self.hospitalizations.sum())
 
-        n = int(self.expected_damage(death_pressure, self.deaths.sum()))
+        n = int(self.expected_damage(death_pressure, self.duration, self.deaths.sum()))
         self.expected_deaths = n
 
-        n = int(self.expected_damage(hospital_pressure, self.hospitalizations.sum()))
+        n = int(self.expected_damage(hospital_pressure, self.duration, self.hospitalizations.sum()))
         self.expected_hospitalizations = n
 
         self.reduced_deaths = 1 - death_pressure.iloc[-1]
@@ -414,9 +414,9 @@ st.markdown(
     f"""
 * **Total de doses:** {int(r.applied_doses):n}
 * **Pessoas vacinadas:** {int(r.num_vaccinated):n} + {r.initial_doses:n} (inicial)
+* **Dias de vacinação:** {r.duration}
 * **Óbitos anuais projetados*: ** {r.expected_deaths:n} (com vacina) / {r.expected_deaths_max:n} (sem vacina)
 * **Hospitalizações anuais projetadas*: ** {r.expected_hospitalizations:n} (com vacina) / {r.expected_hospitalizations_max:n} (sem vacina)
-* **Dias de vacinação:** {r.duration}
 * **Redução na hospitalização:** {100 * r.reduced_hospitalizations:.1f}%
 * **Redução dos óbitos:** {100 * r.reduced_deaths:.1f}%
 
