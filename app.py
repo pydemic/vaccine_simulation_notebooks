@@ -507,8 +507,8 @@ oportunidade de registro dos dados nos sistemas oficiais.
 # Gráficos
 #
 fig_names = {"expected": "Esperado"}
-# select = ['expected']
-select = ["expected", "min", "max"]
+select = ['expected']
+# select = ["expected", "min", "max"]
 
 if not r.error:
     df = r.pressure.loc[:, "hospitalizations"].loc[:, select]
