@@ -1,7 +1,17 @@
 from dataclasses import dataclass, field
 import locale
 import sys
-from typing import Callable, Generic, List, Tuple, TypeVar, Dict, overload, cast
+from typing import (
+    Callable,
+    Generic,
+    List,
+    Tuple,
+    TypeVar,
+    Dict,
+    NamedTuple,
+    overload,
+    cast,
+)
 from types import SimpleNamespace
 
 import matplotlib.pyplot as plt
@@ -63,6 +73,7 @@ class InputReader:
     """
     Mostra sidebar e lê entradas do usuário
     """
+
     data: dict = field(default_factory=dict)
     exclude: set = field(default_factory=set)
     FIELDS = [
@@ -170,6 +181,7 @@ class InputReader:
 def read() -> dict:
     return InputReader().ask()
 
+
 def config():
     import builtins
 
@@ -184,6 +196,7 @@ def config():
             pass
 
     setattr(builtins, "st", st)
+    setattr(builtins, "dbg", st.write)
 
 
 # A hack to keep types of cached functions consistent
@@ -229,7 +242,42 @@ def load_regions():
     return db["name"].to_dict()
 
 
+# TODO: move to campaign?
+class ResultStats(NamedTuple):
+    """
+    Simple statistics derived from simulation.
+    """
+
+    duration: int
+    applied_doses: int
+    num_vaccinated: int
+    initial_doses: int = 0
+    expected_deaths: int = 0
+    expected_deaths_max: int = 0
+    expected_hospitalizations: int = 0
+    expected_hospitalizations_max: int = 0
+    reduced_deaths: float = 0.0
+    reduced_hospitalizations: float = 0.0
+
+
+class ResultReport(NamedTuple):
+    """
+    Full report derived from simulation.
+    """
+
+    stats: ResultStats
+    age_distribution: pd.Series
+    hospitalizations: pd.Series
+    deaths: pd.Series
+    pressure: pd.Series
+    vaccinated: pd.Series
+    initial: pd.Series
+    error: bool = False
+
+
 class Job:
+    result: lib.MultiVaccineCampaign
+
     def __init__(
         self,
         rate,
@@ -237,8 +285,8 @@ class Job:
         stocks,
         initial_plan,
         vaccine_plan,
-        coarse = False,
-        smooth = True,
+        coarse=False,
+        smooth=True,
         single_dose=False,
     ):
         self.coarse: bool = coarse
@@ -269,22 +317,19 @@ class Job:
             self.result = self._run_simulation()
             self.pressure = self._compute_pressure(self.result)
             self.vaccinated = self._compute_vaccine_distribution(self.result)
-            duration = self.result.duration
-
-            stats = {
-                'applied_doses': self.result.applied_doses,
-                'duration': duration,
-                **self._compute_expected_damage(self.pressure, duration),
+            self.stats = ResultStats(
+                duration=self.result.duration,
+                applied_doses=int(self.result.applied_doses),
+                **self._compute_expected_damage(self.pressure, self.result.duration),
                 **self._compute_vaccinations(self.result),
-            }
-            self.stats = pd.Series(stats, name='stats')
+            )
 
     def __getattr__(self, attr):
         if not self._has_init:
             self._force_init()
         return self.__dict__[attr]
 
-    def _run_simulation(self):
+    def _run_simulation(self) -> lib.MultiVaccineCampaign:
         # Prepara entradas da simulação
         num_phases = 1 if self.single_dose else 2
         max_doses = [self.vaccine_stocks[k] // num_phases for k in self.vaccines]
@@ -314,59 +359,72 @@ class Job:
 
     def _compute_pressure(self, result) -> pd.DataFrame:
         if self.single_dose:
-            eff = [v.efficiency for v in self.vaccines]
-        else:
             eff = [v.single_dose_efficiency for v in self.vaccines]
+        else:
+            eff = [v.efficiency for v in self.vaccines]
 
         delay = self.get_delay(self.vaccines)
         kwds = {
-            "delay": delay["immunization"],
             "initial": self.initial,
             "efficiency": eff,
+        }
+        kwds_max = {
+            **kwds,
+            "delay": delay["immunization"],
             "phase": 1 if self.single_dose else 2,
         }
         kwds_min = {**kwds, "delay": 0, "phase": 1}
+        kwds["single_dose"] = self.single_dose
 
         damage = result.damage_curve
         expected = result.expected_damage_curve
 
-        df_hosp = pd.DataFrame({
-            'expected': expected(self.hospitalizations, **kwds),
-            'max': damage(self.hospitalizations, **kwds),
-            'min': damage(self.hospitalizations, **kwds_min),
-        })
-        df_deaths = pd.DataFrame({
-            'expected': expected(self.deaths, **kwds),
-            'max': damage(self.deaths, **kwds),
-            'min': damage(self.deaths, **kwds_min),
-        })
-        return pd.concat({'hospitalizations': df_hosp, 'deaths': df_deaths}, axis=1)
+        df_hosp = pd.DataFrame(
+            {
+                "expected": expected(self.hospitalizations, **kwds),
+                "max": damage(self.hospitalizations, **kwds_max),
+                "min": damage(self.hospitalizations, **kwds_min),
+            }
+        )
+        df_deaths = pd.DataFrame(
+            {
+                "expected": expected(self.deaths, **kwds),
+                "max": damage(self.deaths, **kwds_max),
+                "min": damage(self.deaths, **kwds_min),
+            }
+        )
+        return pd.concat({"hospitalizations": df_hosp, "deaths": df_deaths}, axis=1)
 
     def _compute_expected_damage(self, pressure, duration) -> dict:
         """
         Derive hospitalizations/deaths from pressure curves.
         """
         out = {}
-        death_pressure = pressure['deaths', 'expected']
-        hospital_pressure = pressure['hospitalizations', 'expected']
+        d_pressure = pressure["deaths", "expected"]
+        h_pressure = pressure["hospitalizations", "expected"]
 
-        out['expected_deaths_max'] = int(self.deaths.sum())
-        out['expected_hospitalizations_max'] = int(self.hospitalizations.sum())
+        deaths = self.deaths.sum()
+        hospitalizations = self.hospitalizations.sum()
 
-        n = int(self.expected_damage(death_pressure, duration, self.deaths.sum()))
-        out['expected_deaths'] = n
+        out["expected_deaths_max"] = int(deaths)
+        out["expected_hospitalizations_max"] = int(hospitalizations)
 
-        n = int(self.expected_damage(hospital_pressure, duration, self.hospitalizations.sum()))
-        out['expected_hospitalizations'] = n
+        n = self.expected_damage(d_pressure, duration, deaths)
+        out["expected_deaths"] = int(n)
 
-        out['reduced_deaths'] = 1 - death_pressure.iloc[-1]
-        out['reduced_hospitalizations'] = 1 - hospital_pressure.iloc[-1]
+        n = self.expected_damage(h_pressure, duration, hospitalizations)
+        out["expected_hospitalizations"] = int(n)
+
+        out["reduced_deaths"] = 1 - d_pressure.iloc[-1]
+        out["reduced_hospitalizations"] = 1 - h_pressure.iloc[-1]
         return out
 
     def _compute_vaccinations(self, result) -> Dict[str, int]:
         return {
-            'num_vaccinated': int(result.applied_doses / (1 if self.single_dose else 2)),
-            'initial_doses': int(self.initial.values.sum()),
+            "num_vaccinated": int(
+                result.applied_doses / (1 if self.single_dose else 2)
+            ),
+            "initial_doses": int(self.initial.values.sum()),
         }
 
     def _compute_vaccine_distribution(self, result) -> pd.Series:
@@ -402,12 +460,19 @@ class Job:
         return scale * res
 
 
-@st.cache(hash_funcs={Job: id})
-def compute(**kwargs) -> Tuple[lib.VaccinationCampaign, SimpleNamespace]:
-    public_fields = ('stats', 'pressure', 'hospitalizations', 'deaths', 'age_distribution', 'vaccinated', 'initial')
+# @st.cache(hash_funcs={Job: id})
+def compute(**kwargs) -> Tuple[lib.MultiVaccineCampaign, ResultReport]:
+    public_fields = (
+        "pressure",
+        "hospitalizations",
+        "deaths",
+        "age_distribution",
+        "vaccinated",
+        "initial",
+    )
     data = Job(**kwargs)
     fields = {k: getattr(data, k) for k in public_fields}
-    return data.result, SimpleNamespace(error=False, **fields)
+    return data.result, ResultReport(stats=data.stats, **fields)
 
 
 #
@@ -418,17 +483,17 @@ st.title(
     "Ferramenta para determinação do impacto da vacinação nas internações por COVID-19"
 )
 campaign, r = compute(**(InputReader().ask()))
-
 st.header("Resultados")
 st.markdown(
     f"""
 * **Total de doses:** {int(r.stats.applied_doses):n}
 * **Pessoas vacinadas:** {int(r.stats.num_vaccinated):n} + {r.stats.initial_doses:n} (inicial)
-* **Dias de vacinação:** {campaign.duration}"""
-f"""
-* **Óbitos anuais projetados*: ** {r.stats.expected_deaths:n} (com vacina) / {r.stats.expected_deaths_max:n} (sem vacinação)
-* **Hospitalizações anuais projetadas*: ** {r.stats.expected_hospitalizations:n} (com vacina) / {r.stats.expected_hospitalizations_max:n} (sem vacinação)"""
-f"""* **Redução na hospitalização:** {100 * r.stats.reduced_hospitalizations:.1f}%
+* **Dias de vacinação:** {campaign.campaign_duration}"""
+    #     f"""
+    # * **Óbitos anuais projetados*: ** {r.stats.expected_deaths:n} (com vacina) / {r.stats.expected_deaths_max:n} (sem vacinação)
+    # * **Hospitalizações anuais projetadas*: ** {r.stats.expected_hospitalizations:n} (com vacina) / {r.stats.expected_hospitalizations_max:n} (sem vacinação)"""
+    f"""
+* **Redução na hospitalização:** {100 * r.stats.reduced_hospitalizations:.1f}%
 * **Redução dos óbitos:** {100 * r.stats.reduced_deaths:.1f}%
 
 &ast;  Óbitos e hospitalizações foram projetados a partir de dados do 
@@ -441,19 +506,22 @@ oportunidade de registro dos dados nos sistemas oficiais.
 #
 # Gráficos
 #
-fig_names = {'expected': "Esperado"}
+fig_names = {"expected": "Esperado"}
+# select = ['expected']
+select = ["expected", "min", "max"]
+
 if not r.error:
-    df = cast(pd.DataFrame, r.pressure['hospitalizations'][['expected']])
+    df = r.pressure.loc[:, "hospitalizations"].loc[:, select]
     df.rename(columns=fig_names, inplace=True)
-    
+
     fig, ax = plt.subplots()
     campaign.plot_hospitalization_pressure_curve(df)
     ax.legend()
     st.pyplot(fig)
 
-    df = cast(pd.DataFrame, r.pressure['deaths'][['expected']])
+    df = r.pressure.loc[:, "deaths"].loc[:, select]
     df.rename(columns=fig_names, inplace=True)
-    
+
     fig, ax = plt.subplots()
     campaign.plot_death_pressure_curve(df)
     ax.legend()
@@ -490,7 +558,7 @@ suposição conservadora, especialmente em níveis mais altos de vacinação.
 
 1. Eficácia para formas graves da doença COVID-19 = 100% [1,2]
 2. Para o esquema vacinal foram considerados os seguintes intervalos:
-- **Butantan:** O esquema de imunização é de 2 doses com intervalo máximo de 22 dias entre as doses [1].
+- **Butantan:** O esquema de imunização é de 2 doses com intervalo máximo de 28 dias entre as doses [1].
 - **Astrazeneca/Fiocruz:** O esquema de imunização é de 2 doses com intervalo máximo de 90 dias entre as doses [2].
 3. Foram considerados imunizados apenas os indivíduos que tiverem as duas doses da vacina [1,2].  
 4. A imunização (soroconversão) ocorre em um período de 28 dias após aplicação da segunda dose [1,2].
@@ -511,13 +579,17 @@ emergencial, em caráter experimental, da vacina covid-19 (recombinante) –
 st.subheader("Dados adicionais")
 
 with st.beta_expander("Dados demográficos"):
-    st.markdown("""
-Conjunto de dados do SIVEP-GRIPE e IBGE que foram utilizados para cálculo de parâmetros epidemiológicos e 
-populacionais nas projeções de óbitos e hospitalizações estimadas pela ferramenta. Os dados de hospitalização e óbitos do 
-SIVEP-GRIPE abrangem os dados desde 01 de janeiro a 31 de dezembro de 2020. Para os dados de população por faixa etária
-foi utilizada a projeção do IBGE para 2020. A coluna de vacinado (planejado), corresponde ao número de doses planejadas para aplicação 
-em cada uma das faixa etárias, dado que deve variar conforme simulação. 
-""")
+    st.markdown(
+        """Conjunto de dados do SIVEP-GRIPE e IBGE que foram utilizados para 
+cálculo de parâmetros epidemiológicos e  populacionais nas projeções de óbitos 
+e hospitalizações estimadas pela ferramenta. Os dados de hospitalização e óbitos 
+do  SIVEP-GRIPE abrangem os dados desde 01 de janeiro a 31 de dezembro de 2020. 
+Para os dados de população por faixa etária foi utilizada a projeção do IBGE 
+para 2020. A coluna de vacinado (planejado), corresponde ao número de doses 
+planejadas para aplicação  em cada uma das faixa etárias, dado que deve variar 
+conforme simulação. 
+"""
+    )
     df = pd.DataFrame(
         {
             "Distribuição etária": r.age_distribution,
@@ -529,11 +601,13 @@ em cada uma das faixa etárias, dado que deve variar conforme simulação.
     st.dataframe(df.iloc[::-1])
 
 with st.beta_expander("Simulação da estratégia de vacinação planejada por dia"):
-    st.markdown("""
+    st.markdown(
+        """
 Esta tabela apresenta de forma detalhada o planejamento informado no painel de 
 controle para simulação da estratégia de vacinação, apresentando os 
 resultados por dia, faixa etária e etapa da vacinação.
-""")
+"""
+    )
     df = campaign.events.copy()
     st.dataframe(
         campaign.events.rename(
@@ -557,5 +631,5 @@ if r.stats.initial_doses > 0:
         totals = r.age_distribution.loc[init.index].values
         st.bar_chart(100 * init.iloc[:, 0] / totals)
 
-st.text('\n')
-st.image('logo-opas.png')
+st.text("\n")
+st.image("logo-opas.png")

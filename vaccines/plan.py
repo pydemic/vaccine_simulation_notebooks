@@ -27,7 +27,7 @@ from .vaccine import Vaccine
 Number = Union[int, float]
 EMPTY_DOSE = (None, None, None, 0)
 AGE_RANGE = re.compile(r"(\d+)([+]|[-]\d+)?")
-T = TypeVar("T", bound="Plan", covariant=True)
+T = TypeVar("T")
 CT = TypeVar("CT", bound=VaccinationCampaign, covariant=True)
 ET = TypeVar("ET", bound=tuple, covariant=True)
 
@@ -69,7 +69,9 @@ class Plan(Generic[CT, ET]):
         initial = kwargs.pop("initial", None)
         steps = parse_plan(src, age_distribution, initial=initial)
         args = (steps, age_distribution, *args)
-        return cls(*args, **kwargs)
+        new = object.__new__(cls)
+        new.__init__(*args, **kwargs)
+        return new
 
     def __init__(self, steps, age_distribution):
         self.steps = tuple(steps)
@@ -78,7 +80,7 @@ class Plan(Generic[CT, ET]):
         self.events = []
         self.day = 0
 
-    def execute(self, max_iter=10_000) -> VaccinationCampaign:
+    def execute(self, max_iter=10_000) -> CT:
         """
         Execute plan and return results
         """
@@ -94,7 +96,7 @@ class Plan(Generic[CT, ET]):
         """
         raise NotImplementedError
 
-    def _create_result(self):
+    def _create_result(self) -> CT:
         events = self.summary()
         return self._result(events, self.age_distribution)
 
@@ -227,7 +229,7 @@ class MultipleVaccinesRatePlan(Plan[MultiVaccineCampaign, FullEvent]):
     """
 
     schedule: Dict[int, List[FullEvent]]
-    
+
     _column_names = [*Plan._column_names, "vaccine_type"]
     _result = MultiVaccineCampaign
     _event = FullEvent
@@ -365,7 +367,9 @@ def parse_plan(
     age_acc = Counter[int]()
 
     if initial is not None and len(initial) > 0:
-        for k, v in zip(cast(List[int], initial.index), cast(List[float], initial.values)):
+        for k, v in zip(
+            cast(List[int], initial.index), cast(List[float], initial.values)
+        ):
             if v:
                 age_acc[k] += int(v)
 

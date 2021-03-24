@@ -36,7 +36,7 @@ def population_80_plus(data, *, coarse=False):
 def coarse_distribution(data):
     df = data.iloc[::2].copy()
     extra = data.iloc[1::2].values
-    df.iloc[:len(extra)] += extra
+    df.iloc[: len(extra)] += extra
     return df
 
 
