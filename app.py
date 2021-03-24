@@ -1,7 +1,7 @@
 from dataclasses import dataclass, field
 import locale
 import sys
-from typing import Callable, Generic, List, Tuple, TypeVar, overload, cast
+from typing import Callable, Generic, List, Tuple, TypeVar, Dict, overload, cast
 from types import SimpleNamespace
 
 import matplotlib.pyplot as plt
@@ -266,9 +266,18 @@ class Job:
     def _force_init(self):
         if not self._has_init:
             self._has_init = True
-            self._run_simulation()
-            self._extract_pressure_functions()
-            self._extract_expected_values()
+            self.result = self._run_simulation()
+            self.pressure = self._compute_pressure(self.result)
+            self.vaccinated = self._compute_vaccine_distribution(self.result)
+            duration = self.result.duration
+
+            stats = {
+                'applied_doses': self.result.applied_doses,
+                'duration': duration,
+                **self._compute_expected_damage(self.pressure, duration),
+                **self._compute_vaccinations(self.result),
+            }
+            self.stats = pd.Series(stats, name='stats')
 
     def __getattr__(self, attr):
         if not self._has_init:
@@ -298,14 +307,12 @@ class Job:
         max_delay = sum(max(x) for x in delay.values())
         max_day = cast(int, result.events["day"].max())
         duration = max_day + max_delay
-        self.duration = lib.by_periods(duration, 30)
+        duration = lib.by_periods(duration, 30)
 
         # Resultado e propriedades derivadas
-        self.result = self.plots = result.copy(duration=self.duration)
-        self.applied_doses = self.result.applied_doses
-        self.events = self.result.events
+        return result.copy(duration=duration)
 
-    def _extract_pressure_functions(self):
+    def _compute_pressure(self, result) -> pd.DataFrame:
         if self.single_dose:
             eff = [v.efficiency for v in self.vaccines]
         else:
@@ -320,8 +327,8 @@ class Job:
         }
         kwds_min = {**kwds, "delay": 0, "phase": 1}
 
-        damage = self.result.damage_curve
-        expected = self.result.expected_damage_curve
+        damage = result.damage_curve
+        expected = result.expected_damage_curve
 
         df_hosp = pd.DataFrame({
             'expected': expected(self.hospitalizations, **kwds),
@@ -333,26 +340,39 @@ class Job:
             'max': damage(self.deaths, **kwds),
             'min': damage(self.deaths, **kwds_min),
         })
-        self.pressure = pd.concat({'hospitalizations': df_hosp, 'deaths': df_deaths}, axis=1)
+        return pd.concat({'hospitalizations': df_hosp, 'deaths': df_deaths}, axis=1)
 
-    def _extract_expected_values(self):
+    def _compute_expected_damage(self, pressure, duration) -> dict:
         """
         Derive hospitalizations/deaths from pressure curves.
         """
-        death_pressure = self.pressure['deaths', 'expected']
-        hospital_pressure = self.pressure['hospitalizations', 'expected']
+        out = {}
+        death_pressure = pressure['deaths', 'expected']
+        hospital_pressure = pressure['hospitalizations', 'expected']
 
-        self.expected_deaths_max = int(self.deaths.sum())
-        self.expected_hospitalizations_max = int(self.hospitalizations.sum())
+        out['expected_deaths_max'] = int(self.deaths.sum())
+        out['expected_hospitalizations_max'] = int(self.hospitalizations.sum())
 
-        n = int(self.expected_damage(death_pressure, self.duration, self.deaths.sum()))
-        self.expected_deaths = n
+        n = int(self.expected_damage(death_pressure, duration, self.deaths.sum()))
+        out['expected_deaths'] = n
 
-        n = int(self.expected_damage(hospital_pressure, self.duration, self.hospitalizations.sum()))
-        self.expected_hospitalizations = n
+        n = int(self.expected_damage(hospital_pressure, duration, self.hospitalizations.sum()))
+        out['expected_hospitalizations'] = n
 
-        self.reduced_deaths = 1 - death_pressure.iloc[-1]
-        self.reduced_hospitalizations = 1 - hospital_pressure.iloc[-1]
+        out['reduced_deaths'] = 1 - death_pressure.iloc[-1]
+        out['reduced_hospitalizations'] = 1 - hospital_pressure.iloc[-1]
+        return out
+
+    def _compute_vaccinations(self, result) -> Dict[str, int]:
+        return {
+            'num_vaccinated': int(result.applied_doses / (1 if self.single_dose else 2)),
+            'initial_doses': int(self.initial.values.sum()),
+        }
+
+    def _compute_vaccine_distribution(self, result) -> pd.Series:
+        df = result.events.drop(columns=["day", "fraction", "acc"])
+        df = df.loc[df["phase"] == 2].groupby("age").sum()
+        return df["doses"]
 
     def get_delay(self, vaccines):
         return {
@@ -366,22 +386,8 @@ class Job:
         return {k: v for k, v in self.stocks.items() if v}
 
     @cached_property
-    def vaccines(self):
+    def vaccines(self) -> list:
         return [k for k, _ in sorted(self.vaccine_stocks.items(), reverse=True)]
-
-    @cached_property
-    def num_vaccinated(self):
-        return self.applied_doses // (1 if self.single_dose else 2)
-
-    @cached_property
-    def initial_doses(self):
-        return self.initial.values.sum()
-
-    @cached_property
-    def vaccinated(self):
-        df = self.result.events.drop(columns=["day", "fraction", "acc"])
-        df = df.loc[df["phase"] == 2].groupby("age").sum()
-        return df["doses"]
 
     def expected_damage(self, pressure, duration, scale=1):
         """
@@ -397,8 +403,11 @@ class Job:
 
 
 @st.cache(hash_funcs={Job: id})
-def compute(**kwargs) -> Job:
-    return Job(**kwargs)
+def compute(**kwargs) -> Tuple[lib.VaccinationCampaign, SimpleNamespace]:
+    public_fields = ('stats', 'pressure', 'hospitalizations', 'deaths', 'age_distribution', 'vaccinated', 'initial')
+    data = Job(**kwargs)
+    fields = {k: getattr(data, k) for k in public_fields}
+    return data.result, SimpleNamespace(error=False, **fields)
 
 
 #
@@ -408,19 +417,19 @@ config()
 st.title(
     "Ferramenta para determinação do impacto da vacinação nas internações por COVID-19"
 )
-r = compute(**(InputReader().ask()))
+campaign, r = compute(**(InputReader().ask()))
 
 st.header("Resultados")
 st.markdown(
     f"""
-* **Total de doses:** {int(r.applied_doses):n}
-* **Pessoas vacinadas:** {int(r.num_vaccinated):n} + {r.initial_doses:n} (inicial)
-* **Dias de vacinação:** {r.duration}"""
+* **Total de doses:** {int(r.stats.applied_doses):n}
+* **Pessoas vacinadas:** {int(r.stats.num_vaccinated):n} + {r.stats.initial_doses:n} (inicial)
+* **Dias de vacinação:** {campaign.duration}"""
 f"""
-* **Óbitos anuais projetados*: ** {r.expected_deaths:n} (com vacina) / {r.expected_deaths_max:n} (sem vacinação)
-* **Hospitalizações anuais projetadas*: ** {r.expected_hospitalizations:n} (com vacina) / {r.expected_hospitalizations_max:n} (sem vacinação)"""
-f"""* **Redução na hospitalização:** {100 * r.reduced_hospitalizations:.1f}%
-* **Redução dos óbitos:** {100 * r.reduced_deaths:.1f}%
+* **Óbitos anuais projetados*: ** {r.stats.expected_deaths:n} (com vacina) / {r.stats.expected_deaths_max:n} (sem vacinação)
+* **Hospitalizações anuais projetadas*: ** {r.stats.expected_hospitalizations:n} (com vacina) / {r.stats.expected_hospitalizations_max:n} (sem vacinação)"""
+f"""* **Redução na hospitalização:** {100 * r.stats.reduced_hospitalizations:.1f}%
+* **Redução dos óbitos:** {100 * r.stats.reduced_deaths:.1f}%
 
 &ast;  Óbitos e hospitalizações foram projetados a partir de dados do 
 SIVEP/gripe, que é atualizado semanalmente e disponibilizado no link: https://opendatasus.saude.gov.br/dataset?tags=SRAG.
@@ -438,7 +447,7 @@ if not r.error:
     df.rename(columns=fig_names, inplace=True)
     
     fig, ax = plt.subplots()
-    r.plots.plot_hospitalization_pressure_curve(df)
+    campaign.plot_hospitalization_pressure_curve(df)
     ax.legend()
     st.pyplot(fig)
 
@@ -446,12 +455,12 @@ if not r.error:
     df.rename(columns=fig_names, inplace=True)
     
     fig, ax = plt.subplots()
-    r.plots.plot_death_pressure_curve(df)
+    campaign.plot_death_pressure_curve(df)
     ax.legend()
     st.pyplot(fig)
 
     fig, ax = plt.subplots()
-    r.plots.plot_vaccination_schedule(ax=ax)
+    campaign.plot_vaccination_schedule(ax=ax)
     st.pyplot(fig)
 else:
     st.error(f"Erro durante execução da simulação: {r.error}")
@@ -525,9 +534,9 @@ Esta tabela apresenta de forma detalhada o planejamento informado no painel de
 controle para simulação da estratégia de vacinação, apresentando os 
 resultados por dia, faixa etária e etapa da vacinação.
 """)
-    df = r.events.copy()
+    df = campaign.events.copy()
     st.dataframe(
-        r.events.rename(
+        campaign.events.rename(
             columns={
                 "day": "Dia",
                 "age": "Idade",
@@ -539,12 +548,12 @@ resultados por dia, faixa etária e etapa da vacinação.
             }
         )
     )
-    codes = "; ".join(f"{i} = {v.name}" for i, v in enumerate(r.vaccines))
+    codes = "; ".join(f"{i} = {v.name}" for i, v in enumerate(campaign.vaccines))
     st.markdown(f"Obs.: código das vacinas: {codes}")
 
-if r.initial_doses > 0:
+if r.stats.initial_doses > 0:
     with st.beta_expander("Vacinas iniciais"):
-        init = r.initial_distribution
+        init = r.initial
         totals = r.age_distribution.loc[init.index].values
         st.bar_chart(100 * init.iloc[:, 0] / totals)
 

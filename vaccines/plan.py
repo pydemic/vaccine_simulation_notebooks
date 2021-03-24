@@ -12,9 +12,12 @@ from typing import (
     Any,
     Union,
     cast,
+    Callable,
+    Mapping,
+    Generic,
 )
-import numpy as np
 import pandas as pd
+import numpy as np
 from numbers import Real
 import re
 
@@ -25,6 +28,8 @@ Number = Union[int, float]
 EMPTY_DOSE = (None, None, None, 0)
 AGE_RANGE = re.compile(r"(\d+)([+]|[-]\d+)?")
 T = TypeVar("T", bound="Plan", covariant=True)
+CT = TypeVar("CT", bound=VaccinationCampaign, covariant=True)
+ET = TypeVar("ET", bound=tuple, covariant=True)
 
 
 class Event(NamedTuple):
@@ -42,7 +47,7 @@ class FullEvent(NamedTuple):
     vaccine_type: int
 
 
-class Plan:
+class Plan(Generic[CT, ET]):
     """
     Base class for executing a vaccination plan
     """
@@ -50,12 +55,12 @@ class Plan:
     steps: Tuple[Tuple[int, Real]]
     age_distribution: pd.Series
     pending: Deque[Tuple[int, Real]]
-    events: List[Event]
+    events: List[ET]
     day: int
 
     _column_names = ["day", "age", "doses", "phase"]
-    _event = Event
-    _result = VaccinationCampaign
+    _event: Any = Event
+    _result: Any = VaccinationCampaign
 
     @classmethod
     def from_source(
@@ -63,7 +68,8 @@ class Plan:
     ) -> T:
         initial = kwargs.pop("initial", None)
         steps = parse_plan(src, age_distribution, initial=initial)
-        return cls(steps, age_distribution, *args, **kwargs)
+        args = (steps, age_distribution, *args)
+        return cls(*args, **kwargs)
 
     def __init__(self, steps, age_distribution):
         self.steps = tuple(steps)
@@ -106,7 +112,7 @@ class Plan:
         df["acc"] = list(self._accumulate())
         total = df["age"].apply(self.age_distribution.loc.__getitem__)
         df["fraction"] = df["acc"] / total
-        return df[df["doses"] > 0]
+        return df.loc[df["doses"] > 0, :]
 
     def _accumulate(self) -> Iterator[float]:
         """
@@ -114,13 +120,10 @@ class Plan:
 
         Return an iterator synchronized with events.
         """
-        acc = Counter()
-        for (_, age, doses, phase) in self.events:
-            acc[age, phase] += doses
-            yield acc[age, phase]
+        raise NotImplementedError
 
 
-class SimpleRatePlan(Plan):
+class SimpleRatePlan(Plan[VaccinationCampaign, Event]):
     """
     A simple fixed rate of vaccination.
 
@@ -172,6 +175,12 @@ class SimpleRatePlan(Plan):
         self.day += 1
         return [ev]
 
+    def _accumulate(self) -> Iterator[float]:
+        acc: Any = Counter()
+        for (_, age, doses, phase) in self.events:
+            acc[age, phase] += doses
+            yield acc[age, phase]
+
 
 class SimpleDosesRatePlan(SimpleRatePlan):
     """
@@ -212,15 +221,12 @@ class SimpleDosesRatePlan(SimpleRatePlan):
         return events
 
 
-class MultipleVaccinesRatePlan(Plan):
+class MultipleVaccinesRatePlan(Plan[MultiVaccineCampaign, FullEvent]):
     """
     Multiple vaccines
     """
 
-    
-    
     schedule: Dict[int, List[FullEvent]]
-    events: List[FullEvent]
     
     _column_names = [*Plan._column_names, "vaccine_type"]
     _result = MultiVaccineCampaign
@@ -328,7 +334,7 @@ class MultipleVaccinesRatePlan(Plan):
 
         Return an iterator synchronized with events.
         """
-        acc = Counter()
+        acc = Counter[Tuple[int, int, int]]()
         for (_, age, doses, phase, ref) in self.events:
             acc[age, phase, ref] += doses
             yield acc[age, phase, ref]
@@ -355,11 +361,11 @@ def parse_plan(
     """
 
     plan = []
-    age_levels = sorted(age_distribution.index)
-    age_acc = Counter()
+    age_levels = sorted(cast(List[int], age_distribution.index))
+    age_acc = Counter[int]()
 
     if initial is not None and len(initial) > 0:
-        for k, v in zip(initial.index, initial.values):
+        for k, v in zip(cast(List[int], initial.index), cast(List[float], initial.values)):
             if v:
                 age_acc[k] += int(v)
 
@@ -394,7 +400,7 @@ def parse_plan(
 
 def validate_plan(st) -> Iterator[Tuple[Any, Number, bool]]:
     def error(msg):
-        return SyntaxError(f"Erro linha {ln}: {msg}")
+        return SyntaxError(f"Erro linha {line_no}: {msg}")
 
     def parse_num(num):
         if num.endswith("%"):
@@ -408,7 +414,7 @@ def validate_plan(st) -> Iterator[Tuple[Any, Number, bool]]:
             except ValueError:
                 raise error("número inválido")
 
-    for ln, line in enumerate(st.splitlines(), 1):
+    for line_no, line in enumerate(st.splitlines(), 1):
         line = line.strip()
         if not line or line.startswith("#"):
             continue
@@ -420,15 +426,14 @@ def validate_plan(st) -> Iterator[Tuple[Any, Number, bool]]:
             line = f"global:{line}"
 
         key, _, number = map(str.strip, line.partition(":"))
-
-        key = normalize_age_range(key)
+        key = normalize_age_range(key, line_no, key)
 
         value, is_relative = parse_num(number)
         if value:
             yield key, value, is_relative
 
 
-def normalize_age_range(st):
+def normalize_age_range(st, ln, key):
     # Cheat and ignore the range part of the key
     if st == "global":
         return st
