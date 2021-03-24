@@ -265,7 +265,8 @@ class MultiVaccineCampaign(VaccinationCampaign):
 
         if efficiency is None:
             efficiency = np.array([v.efficiency for v in self.vaccines])
-        efficiency = np.asarray(efficiency)
+        else:
+            efficiency = np.asarray(efficiency)
 
         # We accumulate the contribution of each vaccine in this array
         reduction_acc = np.zeros(self._duration or 0, dtype=float)

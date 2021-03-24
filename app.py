@@ -2,6 +2,7 @@ from dataclasses import dataclass, field
 import locale
 import sys
 from typing import Callable, Generic, List, Tuple, TypeVar, overload, cast
+from types import SimpleNamespace
 
 import matplotlib.pyplot as plt
 import pandas as pd
@@ -80,6 +81,7 @@ class InputReader:
     )
 
     def ask(self):
+        st.sidebar.header("Painel de controle")
         for field in self.FIELDS:
             if field not in self.exclude:
                 fn = getattr(self, f"read_{field}")
@@ -105,7 +107,6 @@ class InputReader:
         return plan
 
     def read_region(self):
-        st.sidebar.header("Configurações")
         opts = load_regions()
         return st.sidebar.selectbox(
             "UF", [*opts.keys()], format_func=opts.get, index=len(opts) - 1
@@ -395,8 +396,8 @@ class Job:
         return scale * res
 
 
-# @st.cache
-def compute(**kwargs):
+@st.cache(hash_funcs={Job: id})
+def compute(**kwargs) -> Job:
     return Job(**kwargs)
 
 
@@ -414,10 +415,11 @@ st.markdown(
     f"""
 * **Total de doses:** {int(r.applied_doses):n}
 * **Pessoas vacinadas:** {int(r.num_vaccinated):n} + {r.initial_doses:n} (inicial)
-* **Dias de vacinação:** {r.duration}
-* **Óbitos anuais projetados*: ** {r.expected_deaths:n} (com vacina) / {r.expected_deaths_max:n} (sem vacina)
-* **Hospitalizações anuais projetadas*: ** {r.expected_hospitalizations:n} (com vacina) / {r.expected_hospitalizations_max:n} (sem vacina)
-* **Redução na hospitalização:** {100 * r.reduced_hospitalizations:.1f}%
+* **Dias de vacinação:** {r.duration}"""
+f"""
+* **Óbitos anuais projetados*: ** {r.expected_deaths:n} (com vacina) / {r.expected_deaths_max:n} (sem vacinação)
+* **Hospitalizações anuais projetadas*: ** {r.expected_hospitalizations:n} (com vacina) / {r.expected_hospitalizations_max:n} (sem vacinação)"""
+f"""* **Redução na hospitalização:** {100 * r.reduced_hospitalizations:.1f}%
 * **Redução dos óbitos:** {100 * r.reduced_deaths:.1f}%
 
 &ast;  Óbitos e hospitalizações foram projetados a partir de dados do 
@@ -430,14 +432,21 @@ oportunidade de registro dos dados nos sistemas oficiais.
 #
 # Gráficos
 #
+fig_names = {'expected': "Esperado"}
 if not r.error:
+    df = cast(pd.DataFrame, r.pressure['hospitalizations'][['expected']])
+    df.rename(columns=fig_names, inplace=True)
+    
     fig, ax = plt.subplots()
-    r.plots.plot_hospitalization_pressure_curve(r.pressure['hospitalizations'])
+    r.plots.plot_hospitalization_pressure_curve(df)
     ax.legend()
     st.pyplot(fig)
 
+    df = cast(pd.DataFrame, r.pressure['deaths'][['expected']])
+    df.rename(columns=fig_names, inplace=True)
+    
     fig, ax = plt.subplots()
-    r.plots.plot_death_pressure_curve(r.pressure['deaths'])
+    r.plots.plot_death_pressure_curve(df)
     ax.legend()
     st.pyplot(fig)
 
@@ -489,32 +498,44 @@ emergencial, em caráter experimental, da vacina covid-19 (recombinante) –
 """
 )
 
-# Imprime dados avançados e possivelmente locais para baixar CSVs.
-st.subheader("Avançado")
+# Imprime dados adicionais e possivelmente locais para baixar CSVs.
+st.subheader("Dados adicionais")
 
 with st.beta_expander("Dados demográficos"):
+    st.markdown("""
+Conjunto de dados do SIVEP-GRIPE e IBGE que foram utilizados para cálculo de parâmetros epidemiológicos e 
+populacionais nas projeções de óbitos e hospitalizações estimadas pela ferramenta. Os dados de hospitalização e óbitos do 
+SIVEP-GRIPE abrangem os dados desde 01 de janeiro a 31 de dezembro de 2020. Para os dados de população por faixa etária
+foi utilizada a projeção do IBGE para 2020. A coluna de vacinado (planejado), corresponde ao número de doses planejadas para aplicação 
+em cada uma das faixa etárias, dado que deve variar conforme simulação. 
+""")
     df = pd.DataFrame(
         {
             "Distribuição etária": r.age_distribution,
             "Hospitalizações": r.hospitalizations,
-            "Vacinados (estimado)": r.vaccinated,
+            "Vacinados (planejado)": r.vaccinated,
             "Óbitos": r.deaths,
         }
     ).dropna()
     st.dataframe(df.iloc[::-1])
 
-with st.beta_expander("Programa vacinal detalhado"):
+with st.beta_expander("Simulação da estratégia de vacinação planejada por dia"):
+    st.markdown("""
+Esta tabela apresenta de forma detalhada o planejamento informado no painel de 
+controle para simulação da estratégia de vacinação, apresentando os 
+resultados por dia, faixa etária e etapa da vacinação.
+""")
     df = r.events.copy()
     st.dataframe(
         r.events.rename(
             columns={
-                "day": "dia",
-                "age": "idade",
-                "doses": "doses",
-                "phase": "fase",
-                "vaccine_type": "vacina",
-                "acc": "doses acumuladas",
-                "fraction": "fração da faixa etária",
+                "day": "Dia",
+                "age": "Idade",
+                "doses": "Doses aplicadas",
+                "phase": "Dose",
+                "vaccine_type": "Vacina",
+                "acc": "Doses acumuladas",
+                "fraction": "% de cobertura",
             }
         )
     )
@@ -526,3 +547,6 @@ if r.initial_doses > 0:
         init = r.initial_distribution
         totals = r.age_distribution.loc[init.index].values
         st.bar_chart(100 * init.iloc[:, 0] / totals)
+
+st.text('\n')
+st.image('logo-opas.png')
