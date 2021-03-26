@@ -636,3 +636,4 @@ if r.stats.initial_doses > 0:
 
 st.text("\n")
 st.image("logo-opas.png")
+st.markdown("Mais informações sobre vacinação COVID-19 [Our World in Data](https://ourworldindata.org/covid-vaccinations)")
