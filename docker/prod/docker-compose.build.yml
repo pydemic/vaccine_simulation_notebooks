@@ -1,0 +1,8 @@
+version: '3.8'
+
+services:
+  build:
+    image: pydemic/vaccine_simulation_notebooks:production
+    build:
+      context: ../../
+      dockerfile: ./docker/prod/Dockerfile
